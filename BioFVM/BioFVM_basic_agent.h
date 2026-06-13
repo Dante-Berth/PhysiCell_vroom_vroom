@@ -116,9 +116,17 @@ class Basic_Agent
 	virtual ~Basic_Agent(){};
 	// simulate secretion and uptake at the nearest voxel at the indicated microenvironment.
 	// if no microenvironment indicated, use the currently selected microenvironment. 
-	void simulate_secretion_and_uptake( Microenvironment* M, double dt ); 
+	void simulate_secretion_and_uptake( Microenvironment* M, double dt );
 
-	int get_current_voxel_index( void ); 
+	// Pack this cell's secretion/uptake contribution for the GPU batch: writes its
+	// voxel index and ns-long temp1/temp2/temp_export2 rows at the given offsets.
+	// Recomputes the temp constants if the cell's volume changed (mirrors the lazy
+	// recompute in simulate_secretion_and_uptake). Returns false if the cell is
+	// inactive (caller should mark the voxel slot as -1 / skip it).
+	bool pack_secretion_row( double dt,
+		int& voxel_out, double* temp1_out, double* temp2_out, double* export2_out );
+
+	int get_current_voxel_index( void );
 	// directly access the substrate vector at the nearest voxel at the indicated microenvironment 
 	std::vector<double>& nearest_density_vector( int microenvironment_index ); // not implemented!
 	std::vector<double>& nearest_density_vector( void );

@@ -3,6 +3,7 @@
 .DS_Store
 *.exe
 *.o
+.venv
 addons/libRoadrunner/roadrunner/
 addons/libRoadrunner/roadrunner-win64-vs14-cp35m.zip
 addons/PhysiBoSS/MaBoSS/
@@ -21,3 +22,11 @@ user_projects/*
 !user_projects/empty.txt
 Studio.zip
 /studio
+
+# Compiled benchmark/profiling binaries (built from main*.cpp / benchmark_biofvm.cpp)
+project_*
+!project_*.cpp
+# CUDA/BioFVM test + benchmark executables
+BioFVM/tests/test_diffusion_cuda
+BioFVM/tests/test_diffusion_cuda_integration
+BioFVM/tests/bench_diffusion_cuda

@@ -56,6 +56,16 @@ namespace BioFVM{
 
 // /*! diffusion-decay solver: 3D LOD implicit (stable method). D and r uniform */  
 void diffusion_decay_solver__constant_coefficients_LOD_3D( Microenvironment& M, double dt ); // done
+// /*! GPU-resident variant of the 3D LOD solver. Same numerics; keeps the SoA field
+//     resident on the device across steps (dual-backend: CUDA when built with nvcc,
+//     identical CPU fallback otherwise). Drop-in: same signature, selectable via
+//     Microenvironment::auto_choose_diffusion_decay_solver or by assigning directly. */
+void diffusion_decay_solver__constant_coefficients_LOD_3D_GPU( Microenvironment& M, double dt );
+// Build/return the resident device field for M (cached on M.gpu_field_handle).
+// Declared here so Microenvironment::simulate_diffusion_and_secretion_gpu can
+// share the same device field between the diffusion solve and secretion kernel.
+struct gpu_field;
+gpu_field* gpu_ensure_field( Microenvironment& M );
 // /*! diffusion-decay solver: 2D LOD implicit (stable method). D and r uniform */  
 void diffusion_decay_solver__constant_coefficients_LOD_2D( Microenvironment& M, double dt ); // done
 void diffusion_decay_solver__constant_coefficients_LOD_1D( Microenvironment& M, double dt ); // done

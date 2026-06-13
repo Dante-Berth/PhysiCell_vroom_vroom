@@ -61,17 +61,49 @@ typedef std::vector<double> gradient;
 
 /*! /brief   */
 
-class Basic_Agent; 
+class Basic_Agent;
+struct gpu_field; // opaque device-field handle (BioFVM_diffusion_cuda)
 
 class Microenvironment
 {
  private:
 	friend std::ostream& operator<<(std::ostream& os, const Microenvironment& S);  
 
-	/*! For internal use and accelerations in solvers */ 
-	std::vector< std::vector<double> > temporary_density_vectors1; 
-	/*! For internal use and accelerations in solvers */ 
-	std::vector< std::vector<double> > temporary_density_vectors2; 
+	/*! For internal use and accelerations in solvers */
+	std::vector< std::vector<double> > temporary_density_vectors1;
+	/*! For internal use and accelerations in solvers */
+	std::vector< std::vector<double> > temporary_density_vectors2;
+
+	// SoA flat buffer: layout [substrate * n_voxels + voxel]
+	// Eliminates pointer indirection and moves working set into L1 cache
+	// for the Thomas solver passes. Packed from AoS before diffusion,
+	// unpacked back to AoS after.
+	std::vector<double> soa_density1;
+	std::vector<double> soa_density2;
+	double* soa_p;   // points to current SoA buffer (authoritative after first diffusion step)
+	double* soa_old; // points to previous SoA buffer (used by explicit solver)
+	bool soa_is_authoritative; // true: soa_p is up-to-date; p_density_vectors may be stale
+
+	// Lazy-sync dirty flags to eliminate the per-step AoS<->SoA transpose.
+	//   aos_dirty: AoS (p_density_vectors) has writes not yet in SoA  -> pack before solve
+	//   soa_dirty: SoA has results not yet in AoS                     -> unpack before AoS read
+	// Both start false (buffers equal). Secretion writes SoA (sets soa_dirty);
+	// external AoS writes set aos_dirty; readers/writers call the sync helpers below.
+	bool aos_dirty;
+	bool soa_dirty;
+
+	void pack_to_soa( void );         // AoS -> SoA
+	void unpack_from_soa( void );     // SoA -> AoS
+	void resize_soa_buffers( void );  // called from all resize_space / resize_densities paths
+	void sync_soa_from_aos_if_dirty( void ); // pack only if aos_dirty
+	void sync_aos_from_soa_if_dirty( void ); // unpack only if soa_dirty
+
+	// GPU residency: when true, the device field (gpu_field_handle) is authoritative
+	// and soa_p is stale. Set by simulate_diffusion_and_secretion_gpu (which no longer
+	// downloads each step); cleared by sync_soa_from_gpu_if_resident(), which downloads
+	// device -> soa_p exactly when a host SoA access is about to occur.
+	bool gpu_resident = false;
+	void sync_soa_from_gpu_if_resident( void );
 	
 	/*! for internal use in bulk source/sink solvers */
 	std::vector< std::vector<double> > bulk_source_sink_solver_temp1; 
@@ -181,8 +213,10 @@ class Microenvironment
 	void resize_space( double x_start, double x_end, double y_start, double y_end, double z_start, double z_end , double dx_new , double dy_new , double dz_new ); 
 	void resize_space_uniform( double x_start, double x_end, double y_start, double y_end, double z_start, double z_end , double dx_new ); 
 
-	void resize_densities( int new_size );  
-	void add_density( void ); 
+	void resize_densities( int new_size );
+	void sync_to_aos_if_needed( void ); // SoA -> AoS only when p_density_vectors is needed
+	double* get_soa_p( void ) { return soa_p; } // raw SoA pointer for hot-path agent access
+	void add_density( void );
 	void add_density( std::string name , std::string units );
 	void add_density( std::string name , std::string units, double diffusion_constant, double decay_rate ); 
 
@@ -233,10 +267,23 @@ class Microenvironment
 	
 	// use the supplied list of cells
 	void simulate_cell_sources_and_sinks( std::vector<Basic_Agent*>& basic_agent_list , double dt ); 
-	// use the global list of cells 
-	void simulate_cell_sources_and_sinks( double dt ); 
-	
-	void display_information( std::ostream& os ); 
+	// use the global list of cells
+	void simulate_cell_sources_and_sinks( double dt );
+
+	/*! GPU-resident combined step: run one diffusion-decay step and one cell
+	    secretion/uptake step on the device without moving the field back to the
+	    host in between. Requires diffusion_decay_solver ==
+	    diffusion_decay_solver__constant_coefficients_LOD_3D_GPU. The (small)
+	    per-cell batch is packed from all_basic_agents each call; the field stays
+	    resident and is synced to the host lazily on the next host read.
+	    Numerically identical to simulate_diffusion_decay(dt) followed by
+	    simulate_cell_sources_and_sinks(dt). */
+	void simulate_diffusion_and_secretion_gpu( double dt );
+	// Opaque device-field handle (BioFVM::gpu_field*), owned by the GPU solver;
+	// shared between the diffusion solve and the secretion kernel. null = none.
+	void* gpu_field_handle = nullptr;
+
+	void display_information( std::ostream& os );
 	
 	void add_dirichlet_node( int voxel_index, std::vector<double>& value ); 
 	void update_dirichlet_node( int voxel_index , std::vector<double>& new_value ); 
@@ -261,8 +308,10 @@ class Microenvironment
 	friend void diffusion_decay_solver__constant_coefficients_explicit( Microenvironment& S, double dt ); 
 	friend void diffusion_decay_solver__constant_coefficients_explicit_uniform_mesh( Microenvironment& S, double dt ); 
 
-	friend void diffusion_decay_solver__constant_coefficients_LOD_3D( Microenvironment& S, double dt ); 
-	friend void diffusion_decay_solver__constant_coefficients_LOD_2D( Microenvironment& S, double dt ); 
+	friend void diffusion_decay_solver__constant_coefficients_LOD_3D( Microenvironment& S, double dt );
+	friend void diffusion_decay_solver__constant_coefficients_LOD_3D_GPU( Microenvironment& S, double dt );
+	friend gpu_field* gpu_ensure_field( Microenvironment& S );
+	friend void diffusion_decay_solver__constant_coefficients_LOD_2D( Microenvironment& S, double dt );
 	friend void diffusion_decay_solver__constant_coefficients_LOD_1D( Microenvironment& S, double dt ); 
 	
 	friend void diffusion_decay_explicit_uniform_rates( Microenvironment& M, double dt );

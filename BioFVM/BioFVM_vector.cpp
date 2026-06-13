@@ -128,44 +128,67 @@ std::vector<double> operator-( const std::vector<double>& v1 , double d  )
 
 void operator+=( std::vector<double>& v1, const std::vector<double>& v2 )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] += v2[i]; }
- return; 
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ const double* __restrict__ p2 = v2.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] += p2[i];
+ return;
 }
 
 void operator-=( std::vector<double>& v1, const std::vector<double>& v2 )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] -= v2[i]; }
- return; 
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ const double* __restrict__ p2 = v2.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] -= p2[i];
+ return;
 }
 
 void operator/=( std::vector<double>& v1, const std::vector<double>& v2 )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] /= v2[i]; }
- return;  
-} 
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ const double* __restrict__ p2 = v2.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] /= p2[i];
+ return;
+}
 
 void operator*=( std::vector<double>& v1, const double& a )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] *= a; }
- return; 
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] *= a;
+ return;
 }
 
 void operator*=( std::vector<double>& v1, const std::vector<double>& v2 )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] *= v2[i]; }
- return;  
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ const double* __restrict__ p2 = v2.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] *= p2[i];
+ return;
 }
 
 void operator/=( std::vector<double>& v1, const double& a )
 {
- for( unsigned int i=0; i < v1.size() ; i++ )
- { v1[i] /= a; }
- return;  
+ const double inv_a = 1.0 / a;
+ const unsigned int n = v1.size();
+ double* __restrict__ p1 = v1.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  p1[i] *= inv_a;
+ return;
 }
 
 /* other commonly needed operations on vectors */ 
@@ -264,10 +287,13 @@ void normalize( std::vector<double>* v )
 
 double norm_squared( const std::vector<double>& v )
 {
- double out = 0.0; 
- for( unsigned int i=0 ; i < v.size() ; i++ )
- { out += ( v[i] * v[i] ); }
- return out; 
+ double out = 0.0;
+ const unsigned int n = v.size();
+ const double* __restrict__ p = v.data();
+ #pragma omp simd reduction(+:out)
+ for( unsigned int i=0 ; i < n ; i++ )
+  out += p[i] * p[i];
+ return out;
 }
 
 double norm( const std::vector<double>& v )
@@ -321,38 +347,48 @@ void randomize( std::vector<double>* v )
 
 void axpy( std::vector<double>* y, const double& a , const std::vector<double>& x )
 {
- for( unsigned int i=0; i < (*y).size() ; i++ )
- {
-  (*y)[i] += a * x[i] ; 
- }
- return ; 
+ const unsigned int n = (*y).size();
+ double* __restrict__ py = (*y).data();
+ const double* __restrict__ px = x.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  py[i] += a * px[i];
+ return ;
 }
 
 void axpy( std::vector<double>* y, const std::vector<double>& a , const std::vector<double>& x )
 {
- for( unsigned int i=0; i < (*y).size() ; i++ )
- {
-  (*y)[i] += a[i] * x[i] ; 
- }
- return; 
+ const unsigned int n = (*y).size();
+ double* __restrict__ py = (*y).data();
+ const double* __restrict__ pa = a.data();
+ const double* __restrict__ px = x.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  py[i] += pa[i] * px[i];
+ return;
 }
 
 void naxpy( std::vector<double>* y, const double& a , const std::vector<double>& x )
 {
- for( unsigned int i=0; i < (*y).size() ; i++ )
- {
-  (*y)[i] -= a * x[i] ; 
- }
- return ; 
+ const unsigned int n = (*y).size();
+ double* __restrict__ py = (*y).data();
+ const double* __restrict__ px = x.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  py[i] -= a * px[i];
+ return ;
 }
 
 void naxpy( std::vector<double>* y, const std::vector<double>& a , const std::vector<double>& x )
 {
- for( unsigned int i=0; i < (*y).size() ; i++ )
- {
-  (*y)[i] -= a[i] * x[i] ; 
- }
- return; 
+ const unsigned int n = (*y).size();
+ double* __restrict__ py = (*y).data();
+ const double* __restrict__ pa = a.data();
+ const double* __restrict__ px = x.data();
+ #pragma omp simd
+ for( unsigned int i=0; i < n ; i++ )
+  py[i] -= pa[i] * px[i];
+ return;
 }
 
 // turn a delimited character array (e.g., csv) into a vector of doubles

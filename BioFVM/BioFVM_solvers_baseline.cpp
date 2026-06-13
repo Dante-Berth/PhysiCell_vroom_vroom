@@ -46,9 +46,8 @@
 #############################################################################
 */
 
-#include "BioFVM_solvers.h"
-#include "BioFVM_vector.h"
-#include "BioFVM_diffusion_cuda.h"
+#include "BioFVM_solvers.h" 
+#include "BioFVM_vector.h" 
 
 #include <iostream>
 #include <omp.h>
@@ -192,289 +191,84 @@ void diffusion_decay_solver__constant_coefficients_LOD_3D( Microenvironment& M, 
 		M.diffusion_solver_setup_done = true; 
 	}
 
-	// Precompute raw pointers and sizes for the inlined SoA Thomas passes
-	const unsigned int nx = M.mesh.x_coordinates.size();
-	const unsigned int ny = M.mesh.y_coordinates.size();
-	const unsigned int nz = M.mesh.z_coordinates.size();
-	const unsigned int ns = M.number_of_densities();
-	const unsigned int nv = nx * ny * nz;
-	const int ijump = M.thomas_i_jump;
-	const int jjump = M.thomas_j_jump;
-	const int kjump = M.thomas_k_jump;
-	double* __restrict__ soa = M.soa_p;
+	// original AoS 3D LOD passes (baseline: p_density_vectors, no SoA)
 
-	static std::vector<double> denom_x, cx_flat;
-	static std::vector<double> denom_y, cy_flat;
-	static std::vector<double> denom_z, cz_flat;
-	static std::vector<double> c1_flat;
-	static std::vector<double> decay_factor3;
-	// compact list of substrates that actually diffuse (D>0) — used as inner loop index
-	static std::vector<unsigned int> diff_subs3;
-	static std::vector<unsigned int> nodiff_subs3;
-	static Microenvironment* last_M_3D = nullptr;
-	if( denom_x.size() != nx * ns || &M != last_M_3D )
-	{
-		denom_x.resize( nx * ns ); cx_flat.resize( nx * ns );
-		denom_y.resize( ny * ns ); cy_flat.resize( ny * ns );
-		denom_z.resize( nz * ns ); cz_flat.resize( nz * ns );
-		c1_flat.resize( ns );
-		decay_factor3.resize( ns, 1.0 );
-		diff_subs3.clear();
-		nodiff_subs3.clear();
-		for( unsigned int s = 0; s < ns; s++ )
-		{
-			c1_flat[s] = M.thomas_constant1[s];
-			if( M.diffusion_coefficients[s] == 0.0 )
-			{
-				// 3D LOD: each of 3 half-steps applies factor 1/(1+c2); combined: 1/(1+c2)^3
-				const double f = 1.0 + M.thomas_constant2[s];
-				decay_factor3[s] = 1.0 / (f * f * f);
-				nodiff_subs3.push_back(s);
-			}
-			else
-			{
-				diff_subs3.push_back(s);
-			}
-			for( unsigned int i = 0; i < nx; i++ )
-			{ denom_x[i*ns+s] = M.thomas_denomx[i][s]; cx_flat[i*ns+s] = M.thomas_cx[i][s]; }
-			for( unsigned int j = 0; j < ny; j++ )
-			{ denom_y[j*ns+s] = M.thomas_denomy[j][s]; cy_flat[j*ns+s] = M.thomas_cy[j][s]; }
-			for( unsigned int k = 0; k < nz; k++ )
-			{ denom_z[k*ns+s] = M.thomas_denomz[k][s]; cz_flat[k*ns+s] = M.thomas_cz[k][s]; }
-		}
-		last_M_3D = &M;
-	}
-	const double* __restrict__ dx  = denom_x.data();
-	const double* __restrict__ cxf = cx_flat.data();
-	const double* __restrict__ dy  = denom_y.data();
-	const double* __restrict__ cyf = cy_flat.data();
-	const double* __restrict__ dz  = denom_z.data();
-	const double* __restrict__ czf = cz_flat.data();
-	const double* __restrict__ c1  = c1_flat.data();
-	const unsigned int nd3 = diff_subs3.size();   // number of diffusing substrates
-	const unsigned int nn3 = nodiff_subs3.size();
-
-	// scalar decay for zero-diffusion substrates — one parallel sweep over all voxels
-	if( nn3 > 0 )
-	{
-		#pragma omp parallel for
-		for( unsigned int v = 0; v < nv; v++ )
-			for( unsigned int si = 0; si < nn3; si++ )
-			{
-				const unsigned int s = nodiff_subs3[si];
-				soa[s*nv + v] *= decay_factor3[s];
-			}
-	}
-
-	// --- x-diffusion (diffusing substrates only, single parallel region, row-outer) ---
+	// --- x-diffusion ---
 	M.apply_dirichlet_conditions();
-	#pragma omp parallel for collapse(2)
-	for( unsigned int k = 0; k < nz; k++ )
+	#pragma omp parallel for
+	for( unsigned int k=0; k < M.mesh.z_coordinates.size(); k++ )
 	{
-		for( unsigned int j = 0; j < ny; j++ )
+		for( unsigned int j=0; j < M.mesh.y_coordinates.size(); j++ )
 		{
-			const int n0 = M.voxel_index(0,j,k);
-			for( unsigned int si = 0; si < nd3; si++ )
+			int n = M.voxel_index(0,j,k);
+			(*M.p_density_vectors)[n] /= M.thomas_denomx[0];
+			for( unsigned int i=1; i < M.mesh.x_coordinates.size(); i++ )
 			{
-				const unsigned int s = diff_subs3[si];
-				soa[s*nv+n0] /= dx[s];  // dx[0*ns+s] == dx[s]
+				axpy( &(*M.p_density_vectors)[n+M.thomas_i_jump], M.thomas_constant1, (*M.p_density_vectors)[n] );
+				n += M.thomas_i_jump;
+				(*M.p_density_vectors)[n] /= M.thomas_denomx[i];
 			}
-			for( unsigned int i = 1; i < nx; i++ )
+			for( int i = (int)M.mesh.x_coordinates.size()-2; i >= 0; i-- )
 			{
-				const int n=n0+i*ijump, nm=n-ijump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] += c1[s]*soa[s*nv+nm]; soa[s*nv+n] /= dx[i*ns+s];
-				}
-			}
-			for( int i=(int)nx-2; i>=0; i-- )
-			{
-				const int n=n0+i*ijump, np=n+ijump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] -= cxf[i*ns+s]*soa[s*nv+np];
-				}
+				n = M.voxel_index(i,j,k);
+				naxpy( &(*M.p_density_vectors)[n], M.thomas_cx[i], (*M.p_density_vectors)[n+M.thomas_i_jump] );
 			}
 		}
 	}
 
 	// --- y-diffusion ---
 	M.apply_dirichlet_conditions();
-	#pragma omp parallel for collapse(2)
-	for( unsigned int k = 0; k < nz; k++ )
+	#pragma omp parallel for
+	for( unsigned int k=0; k < M.mesh.z_coordinates.size(); k++ )
 	{
-		for( unsigned int i = 0; i < nx; i++ )
+		for( unsigned int i=0; i < M.mesh.x_coordinates.size(); i++ )
 		{
-			const int n0 = M.voxel_index(i,0,k);
-			for( unsigned int si = 0; si < nd3; si++ )
+			int n = M.voxel_index(i,0,k);
+			(*M.p_density_vectors)[n] /= M.thomas_denomy[0];
+			for( unsigned int j=1; j < M.mesh.y_coordinates.size(); j++ )
 			{
-				const unsigned int s = diff_subs3[si];
-				soa[s*nv+n0] /= dy[s];
+				axpy( &(*M.p_density_vectors)[n+M.thomas_j_jump], M.thomas_constant1, (*M.p_density_vectors)[n] );
+				n += M.thomas_j_jump;
+				(*M.p_density_vectors)[n] /= M.thomas_denomy[j];
 			}
-			for( unsigned int j = 1; j < ny; j++ )
+			for( int j = (int)M.mesh.y_coordinates.size()-2; j >= 0; j-- )
 			{
-				const int n=n0+j*jjump, nm=n-jjump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] += c1[s]*soa[s*nv+nm]; soa[s*nv+n] /= dy[j*ns+s];
-				}
-			}
-			for( int j=(int)ny-2; j>=0; j-- )
-			{
-				const int n=n0+j*jjump, np=n+jjump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] -= cyf[j*ns+s]*soa[s*nv+np];
-				}
+				n = M.voxel_index(i,j,k);
+				naxpy( &(*M.p_density_vectors)[n], M.thomas_cy[j], (*M.p_density_vectors)[n+M.thomas_j_jump] );
 			}
 		}
 	}
 
 	// --- z-diffusion ---
 	M.apply_dirichlet_conditions();
-	#pragma omp parallel for collapse(2)
-	for( unsigned int j = 0; j < ny; j++ )
+	#pragma omp parallel for
+	for( unsigned int j=0; j < M.mesh.y_coordinates.size(); j++ )
 	{
-		for( unsigned int i = 0; i < nx; i++ )
+		for( unsigned int i=0; i < M.mesh.x_coordinates.size(); i++ )
 		{
-			const int n0 = M.voxel_index(i,j,0);
-			for( unsigned int si = 0; si < nd3; si++ )
+			int n = M.voxel_index(i,j,0);
+			(*M.p_density_vectors)[n] /= M.thomas_denomz[0];
+			for( unsigned int k=1; k < M.mesh.z_coordinates.size(); k++ )
 			{
-				const unsigned int s = diff_subs3[si];
-				soa[s*nv+n0] /= dz[s];
+				axpy( &(*M.p_density_vectors)[n+M.thomas_k_jump], M.thomas_constant1, (*M.p_density_vectors)[n] );
+				n += M.thomas_k_jump;
+				(*M.p_density_vectors)[n] /= M.thomas_denomz[k];
 			}
-			for( unsigned int k = 1; k < nz; k++ )
+			for( int k = (int)M.mesh.z_coordinates.size()-2; k >= 0; k-- )
 			{
-				const int n=n0+k*kjump, nm=n-kjump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] += c1[s]*soa[s*nv+nm]; soa[s*nv+n] /= dz[k*ns+s];
-				}
-			}
-			for( int k=(int)nz-2; k>=0; k-- )
-			{
-				const int n=n0+k*kjump, np=n+kjump;
-				for( unsigned int si = 0; si < nd3; si++ )
-				{
-					const unsigned int s = diff_subs3[si];
-					soa[s*nv+n] -= czf[k*ns+s]*soa[s*nv+np];
-				}
+				n = M.voxel_index(i,j,k);
+				naxpy( &(*M.p_density_vectors)[n], M.thomas_cz[k], (*M.p_density_vectors)[n+M.thomas_k_jump] );
 			}
 		}
 	}
 
 	M.apply_dirichlet_conditions();
-	
-	// reset gradient vectors 
-//	M.reset_all_gradient_vectors(); 
+	M.pack_to_soa(); // sync AoS -> SoA after baseline solver writes to AoS
 
-	return; 
-}
+	// reset gradient vectors
+//	M.reset_all_gradient_vectors();
 
-// =====================================================================================
-//  GPU-resident 3D LOD solver (dual-backend; see BioFVM_diffusion_cuda.{h,cu})
-//
-//  Drop-in replacement for diffusion_decay_solver__constant_coefficients_LOD_3D with
-//  identical numerics. The SoA density field stays resident on the device across
-//  steps; we only upload when the host SoA was modified out-of-band (aos_dirty path,
-//  surfaced here as M.soa_dirty-style bookkeeping in simulate_diffusion_decay), and
-//  download the result into M.soa_p so the existing SoA-authoritative protocol in
-//  simulate_diffusion_decay continues to work unchanged.
-//
-//  NOTE (current PoC scope): secretion/uptake still runs on the CPU against soa_p, so
-//  we upload host->device before each solve and download after. The next step (the
-//  secretion/uptake kernel) removes that per-step round-trip by keeping the field on
-//  the device and applying a compact source/sink list there.
-// =====================================================================================
-void diffusion_decay_solver__constant_coefficients_LOD_3D_GPU( Microenvironment& M, double dt )
-{
-	if( M.mesh.regular_mesh == false || M.mesh.Cartesian_mesh == false )
-	{
-		std::cout << "Error: GPU LOD solver requires a regular Cartesian mesh." << std::endl << std::endl;
-		return;
-	}
-
-	// Build the Thomas coefficients on first use by delegating the (one-time) setup
-	// to the CPU solver. That call also performs a full first solve step (setup and
-	// solve are fused in the CPU routine), which is numerically identical to what the
-	// GPU path would do — so we let it advance this first step and return, rather than
-	// solving a second time on top of it (which would double-apply the first step).
-	if( !M.diffusion_solver_setup_done )
-	{
-		diffusion_decay_solver__constant_coefficients_LOD_3D( M, dt );
-		return;
-	}
-
-	// Ensure the resident device field exists (built once from the Thomas coeffs),
-	// stored on M.gpu_field_handle so the secretion kernel can share it.
-	gpu_field* g = gpu_ensure_field( M );
-
-	// Dirichlet conditions are imposed on the host SoA before upload (matches the CPU
-	// solver, which calls apply_dirichlet_conditions before each sweep). For the PoC we
-	// enforce them on host; the device kernel hook will take over with field-residency.
-	M.apply_dirichlet_conditions();
-
-	// Standalone solver: upload current host SoA, solve, download result back. (The
-	// resident combined path in simulate_diffusion_and_secretion_gpu skips the per-step
-	// transfer.)
-	double* soa = M.get_soa_p();
-	gpu_upload( g, soa );
-	gpu_solve_3D_LOD( g );
-	gpu_download( g, soa );
-
-	M.apply_dirichlet_conditions();
 	return;
-}
-
-// Build (once) and return the resident device field for M, caching it on
-// M.gpu_field_handle. Rebuilds if geometry/substrate count changed. Requires the
-// Thomas coefficients to be set up (diffusion_solver_setup_done == true).
-gpu_field* gpu_ensure_field( Microenvironment& M )
-{
-	const unsigned int nx = M.mesh.x_coordinates.size();
-	const unsigned int ny = M.mesh.y_coordinates.size();
-	const unsigned int nz = M.mesh.z_coordinates.size();
-	const unsigned int ns = M.number_of_densities();
-	const unsigned int nv = nx*ny*nz;
-
-	gpu_field* g = (gpu_field*)M.gpu_field_handle;
-	// Rebuild key: encode geometry so a resize invalidates the cached field.
-	static unsigned int cached_nv = 0, cached_ns = 0;
-	if( g != nullptr && nv == cached_nv && ns == cached_ns )
-		return g;
-
-	if( g ) { gpu_field_free( g ); g = nullptr; }
-
-	gpu_solver_params P;
-	P.nx=nx; P.ny=ny; P.nz=nz; P.ns=ns; P.nv=nv;
-	P.c1.resize(ns);
-	P.denom_x.resize(nx*ns); P.cx.resize(nx*ns);
-	P.denom_y.resize(ny*ns); P.cy.resize(ny*ns);
-	P.denom_z.resize(nz*ns); P.cz.resize(nz*ns);
-	for( unsigned int s=0; s<ns; ++s )
-	{
-		P.c1[s] = M.thomas_constant1[s];
-		if( M.diffusion_coefficients[s] == 0.0 )
-		{
-			const double f = 1.0 + M.thomas_constant2[s];   // 3D LOD: 1/(1+c2)^3
-			P.nodiff_subs.push_back(s);
-			P.nodiff_decay.push_back( 1.0/(f*f*f) );
-		}
-		else
-			P.diff_subs.push_back(s);
-		for( unsigned int i=0;i<nx;++i){ P.denom_x[i*ns+s]=M.thomas_denomx[i][s]; P.cx[i*ns+s]=M.thomas_cx[i][s]; }
-		for( unsigned int j=0;j<ny;++j){ P.denom_y[j*ns+s]=M.thomas_denomy[j][s]; P.cy[j*ns+s]=M.thomas_cy[j][s]; }
-		for( unsigned int k=0;k<nz;++k){ P.denom_z[k*ns+s]=M.thomas_denomz[k][s]; P.cz[k*ns+s]=M.thomas_cz[k][s]; }
-	}
-	g = gpu_field_alloc( P );
-	M.gpu_field_handle = (void*)g;
-	cached_nv = nv; cached_ns = ns;
-	return g;
 }
 
 void diffusion_decay_solver__constant_coefficients_LOD_2D( Microenvironment& M, double dt )
@@ -558,143 +352,55 @@ void diffusion_decay_solver__constant_coefficients_LOD_2D( Microenvironment& M, 
 		M.diffusion_solver_setup_done = true; 
 	}
 
-	// SoA inlined 2D LOD passes
+	// original AoS LOD passes (baseline: p_density_vectors, no SoA)
+	M.apply_dirichlet_conditions();
+
+	// x-diffusion
+	#pragma omp parallel for
+	for( unsigned int j=0; j < M.mesh.y_coordinates.size(); j++ )
 	{
-		const unsigned int nx2 = M.mesh.x_coordinates.size();
-		const unsigned int ny2 = M.mesh.y_coordinates.size();
-		const unsigned int ns2 = M.number_of_densities();
-		const unsigned int nv2 = nx2 * ny2;
-		const int ijump2 = M.thomas_i_jump;
-		const int jjump2 = M.thomas_j_jump;
-		double* __restrict__ soa2 = M.soa_p;
-
-		static std::vector<double> dx2, cxf2, dy2, cyf2, c1f2;
-		static std::vector<double> decay_factor2;
-		static std::vector<unsigned int> diff_subs2;   // indices of D>0 substrates
-		static std::vector<unsigned int> nodiff_subs2; // indices of D=0 substrates
-		static Microenvironment* last_M_2D = nullptr;
-		if( dx2.size() != nx2 * ns2 || &M != last_M_2D )
+		unsigned int n = M.voxel_index(0,j,0);
+		(*M.p_density_vectors)[n] /= M.thomas_denomx[0];
+		n += M.thomas_i_jump;
+		for( unsigned int i=1; i < M.mesh.x_coordinates.size(); i++ )
 		{
-			dx2.resize(nx2*ns2); cxf2.resize(nx2*ns2);
-			dy2.resize(ny2*ns2); cyf2.resize(ny2*ns2);
-			c1f2.resize(ns2);
-			decay_factor2.resize(ns2, 1.0);
-			diff_subs2.clear(); nodiff_subs2.clear();
-			for( unsigned int s=0; s<ns2; s++ )
-			{
-				c1f2[s] = M.thomas_constant1[s];
-				if( M.diffusion_coefficients[s] == 0.0 )
-				{
-					// 2D LOD: two half-steps each apply 1/(1+c2); combined: 1/(1+c2)^2
-					const double f = 1.0 + M.thomas_constant2[s];
-					decay_factor2[s] = 1.0 / (f * f);
-					nodiff_subs2.push_back(s);
-				}
-				else { diff_subs2.push_back(s); }
-				for( unsigned int i=0; i<nx2; i++ )
-				{ dx2[i*ns2+s]=M.thomas_denomx[i][s]; cxf2[i*ns2+s]=M.thomas_cx[i][s]; }
-				for( unsigned int j=0; j<ny2; j++ )
-				{ dy2[j*ns2+s]=M.thomas_denomy[j][s]; cyf2[j*ns2+s]=M.thomas_cy[j][s]; }
-			}
-			last_M_2D = &M;
+			axpy( &(*M.p_density_vectors)[n], M.thomas_constant1, (*M.p_density_vectors)[n-M.thomas_i_jump] );
+			(*M.p_density_vectors)[n] /= M.thomas_denomx[i];
+			n += M.thomas_i_jump;
 		}
-		const unsigned int nd2 = diff_subs2.size();
-		const unsigned int nn2 = nodiff_subs2.size();
-
-		// scalar decay for zero-diffusion substrates — one parallel sweep, no Thomas
-		if( nn2 > 0 )
+		n = M.voxel_index( M.mesh.x_coordinates.size()-2, j, 0 );
+		for( int i = (int)M.mesh.x_coordinates.size()-2; i >= 0; i-- )
 		{
-			#pragma omp parallel for
-			for( unsigned int v=0; v<nv2; v++ )
-				for( unsigned int si=0; si<nn2; si++ )
-				{
-					const unsigned int s = nodiff_subs2[si];
-					soa2[s*nv2 + v] *= decay_factor2[s];
-				}
+			naxpy( &(*M.p_density_vectors)[n], M.thomas_cx[i], (*M.p_density_vectors)[n+M.thomas_i_jump] );
+			n -= M.thomas_i_jump;
 		}
-
-		// x-diffusion: single parallel region, row-outer, diffusing-substrate-inner
-		M.apply_dirichlet_conditions();
-		#pragma omp parallel for
-		for( unsigned int j=0; j < ny2; j++ )
-		{
-			const int n0 = M.voxel_index(0,j,0);
-			for( unsigned int si=0; si<nd2; si++ )
-			{
-				const unsigned int s = diff_subs2[si];
-				soa2[s*nv2+n0] /= dx2[s];
-			}
-			for( unsigned int i=1; i<nx2; i++ )
-			{
-				const int n=n0+i*ijump2, nm=n-ijump2;
-				for( unsigned int si=0; si<nd2; si++ )
-				{
-					const unsigned int s = diff_subs2[si];
-					soa2[s*nv2+n] += c1f2[s]*soa2[s*nv2+nm]; soa2[s*nv2+n] /= dx2[i*ns2+s];
-				}
-			}
-			for( int i=(int)nx2-2; i>=0; i-- )
-			{
-				const int n=n0+i*ijump2, np=n+ijump2;
-				for( unsigned int si=0; si<nd2; si++ )
-				{
-					const unsigned int s = diff_subs2[si];
-					soa2[s*nv2+n] -= cxf2[i*ns2+s]*soa2[s*nv2+np];
-				}
-			}
-		}
-
-		// y-diffusion: column-blocked to tame stride-nx access along j.
-		// Process BW adjacent x-columns together so each (j,s) touches one cache line
-		// of BW contiguous voxels (x is stride-1 in the SoA substrate plane, jjump=nx).
-		M.apply_dirichlet_conditions();
-		const unsigned int BW = 8;
-		const unsigned int n_blocks = (nx2 + BW - 1) / BW;
-		#pragma omp parallel for
-		for( unsigned int ib=0; ib < n_blocks; ib++ )
-		{
-			const unsigned int i_lo = ib * BW;
-			const unsigned int i_hi = ( i_lo + BW < nx2 ) ? i_lo + BW : nx2;
-			const unsigned int bw = i_hi - i_lo;
-			// forward sweep
-			for( unsigned int si=0; si<nd2; si++ )
-			{
-				const unsigned int s = diff_subs2[si];
-				const double c1 = c1f2[s];
-				double* __restrict__ col = soa2 + s*nv2 + i_lo; // base of block, row 0
-				const double inv0 = 1.0 / dy2[s];
-				#pragma omp simd
-				for( unsigned int b=0; b<bw; b++ )
-					col[b] *= inv0;
-				for( unsigned int j=1; j<ny2; j++ )
-				{
-					const double invd = 1.0 / dy2[j*ns2+s];
-					double* __restrict__ cur = col + (size_t)j*jjump2;
-					const double* __restrict__ prv = col + (size_t)(j-1)*jjump2;
-					#pragma omp simd
-					for( unsigned int b=0; b<bw; b++ )
-						cur[b] = ( cur[b] + c1*prv[b] ) * invd;
-				}
-			}
-			// back substitution
-			for( unsigned int si=0; si<nd2; si++ )
-			{
-				const unsigned int s = diff_subs2[si];
-				double* __restrict__ col = soa2 + s*nv2 + i_lo;
-				for( int j=(int)ny2-2; j>=0; j-- )
-				{
-					const double cy = cyf2[j*ns2+s];
-					double* __restrict__ cur = col + (size_t)j*jjump2;
-					const double* __restrict__ nxt = col + (size_t)(j+1)*jjump2;
-					#pragma omp simd
-					for( unsigned int b=0; b<bw; b++ )
-						cur[b] -= cy*nxt[b];
-				}
-			}
-		}
-
-		M.apply_dirichlet_conditions();
 	}
+
+	M.apply_dirichlet_conditions();
+
+	// y-diffusion
+	#pragma omp parallel for
+	for( unsigned int i=0; i < M.mesh.x_coordinates.size(); i++ )
+	{
+		int n = M.voxel_index(i,0,0);
+		(*M.p_density_vectors)[n] /= M.thomas_denomy[0];
+		n += M.thomas_j_jump;
+		for( unsigned int j=1; j < M.mesh.y_coordinates.size(); j++ )
+		{
+			axpy( &(*M.p_density_vectors)[n], M.thomas_constant1, (*M.p_density_vectors)[n-M.thomas_j_jump] );
+			(*M.p_density_vectors)[n] /= M.thomas_denomy[j];
+			n += M.thomas_j_jump;
+		}
+		n = M.voxel_index( i, (int)M.mesh.y_coordinates.size()-2, 0 );
+		for( int j = (int)M.mesh.y_coordinates.size()-2; j >= 0; j-- )
+		{
+			naxpy( &(*M.p_density_vectors)[n], M.thomas_cy[j], (*M.p_density_vectors)[n+M.thomas_j_jump] );
+			n -= M.thomas_j_jump;
+		}
+	}
+
+	M.apply_dirichlet_conditions();
+	M.pack_to_soa(); // sync AoS -> SoA after baseline solver writes to AoS
 
 	// reset gradient vectors
 //	M.reset_all_gradient_vectors();

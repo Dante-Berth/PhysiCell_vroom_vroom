@@ -800,8 +800,9 @@ void write_coordinates_node(pugi::xml_node &node, const std::vector<double> &coo
         { oss << " "; }
         oss << coordinates[i];
     }
+    const std::string coord_str = oss.str(); // keep alive until set_value returns
     pugi::xml_node coord_node = node.append_child(name.c_str());
-    coord_node.append_child(pugi::node_pcdata).set_value(oss.str().c_str());
+    coord_node.append_child(pugi::node_pcdata).set_value(coord_str.c_str());
     pugi::xml_attribute attrib = coord_node.append_attribute("delimiter");
     attrib.set_value(" ");
 }

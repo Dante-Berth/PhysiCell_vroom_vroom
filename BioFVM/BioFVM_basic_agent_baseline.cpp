@@ -210,17 +210,16 @@ void Basic_Agent::release_internalized_substrates( void )
 	// total_ext / vol_voxel = total_ext / vol_voxel + fraction*total_internal / vol_voxel 
 	// density_ext += fraction * total_internal / vol_volume 
 	
-	*internalized_substrates /=  pS->voxels(current_voxel_index).volume; // turn to density
-	*internalized_substrates *= *fraction_released_at_death;  // what fraction is released?
-
-	// release this amount into the authoritative AoS density vector
-	const unsigned int ns_r = pS->number_of_densities();
-	const double* __restrict__ pi = internalized_substrates->data();
-	double* __restrict__ pr = (*pS)(current_voxel_index).data();
-	#pragma omp simd
-	for( unsigned int s = 0; s < ns_r; s++ )
-		pr[s] += pi[s];
-
+	// std::cout << "\t\t\t" << (*pS)(current_voxel_index) << "\t\t\t" << std::endl; 
+	*internalized_substrates /=  pS->voxels(current_voxel_index).volume; // turn to density 
+	*internalized_substrates *= *fraction_released_at_death;  // what fraction is released? 
+	
+	// release this amount into the environment 
+	
+	(*pS)(current_voxel_index) += *internalized_substrates; 
+	
+	// zero out the now-removed substrates 
+	
 	internalized_substrates->assign( internalized_substrates->size() , 0.0 ); 
 	
 	return; 
@@ -322,65 +321,28 @@ void Basic_Agent::simulate_secretion_and_uptake( Microenvironment* pS, double dt
 		volume_is_changed = false;
 	}
 	
-	// Fused secretion/uptake/export, reading+writing the SoA buffer directly at this
-	// cell's voxel (soa_p[s*nv + voxel], stride nv across substrates). Operating on SoA
-	// lets the diffusion solver run without a per-step AoS<->SoA transpose: secretion
-	// only touches occupied voxels (~cell count), far fewer than a full-field unpack.
-	// AoS is synced lazily only when a non-secretion reader (sensing, I/O) needs it.
+	// original 3-step secretion/uptake (baseline: no fused loop)
+	if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true )
 	{
-		const unsigned int ns  = pS->number_of_densities();
-		const unsigned int nv  = pS->number_of_voxels();
-		double* __restrict__ base = pS->get_soa_p() + (unsigned int)current_voxel_index;
-		const double* __restrict__ pt1  = cell_source_sink_solver_temp1.data();
-		const double* __restrict__ pt2  = cell_source_sink_solver_temp2.data();
-		const double* __restrict__ pex  = cell_source_sink_solver_temp_export2.data();
+		total_extracellular_substrate_change.assign( total_extracellular_substrate_change.size(), 1.0 );
+		total_extracellular_substrate_change -= cell_source_sink_solver_temp2;
+		total_extracellular_substrate_change *= (*pS)(current_voxel_index);
+		total_extracellular_substrate_change += cell_source_sink_solver_temp1;
+		total_extracellular_substrate_change /= cell_source_sink_solver_temp2;
+		total_extracellular_substrate_change *= pS->voxels(current_voxel_index).volume;
+		*internalized_substrates -= total_extracellular_substrate_change;
+	}
 
-		if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true )
-		{
-			const double voxel_vol = pS->voxels(current_voxel_index).volume;
-			double* __restrict__ pint  = internalized_substrates->data();
-			const double* __restrict__ pex1 = cell_source_sink_solver_temp_export1.data();
-			for( unsigned int s = 0; s < ns; s++ )
-			{
-				double& rho = base[s * nv];
-				const double rho_old = rho;
-				const double rho_mid = (rho_old + pt1[s]) / pt2[s];
-				pint[s] -= (rho_mid - rho_old) * voxel_vol;
-				pint[s] -= pex1[s];
-				rho = rho_mid + pex[s];
-			}
-		}
-		else
-		{
-			for( unsigned int s = 0; s < ns; s++ )
-			{
-				double& rho = base[s * nv];
-				rho = (rho + pt1[s]) / pt2[s] + pex[s];
-			}
-		}
+	(*pS)(current_voxel_index) += cell_source_sink_solver_temp1;
+	(*pS)(current_voxel_index) /= cell_source_sink_solver_temp2;
+
+	(*pS)(current_voxel_index) += cell_source_sink_solver_temp_export2;
+	if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true )
+	{
+		*internalized_substrates -= cell_source_sink_solver_temp_export1;
 	}
 
 	return;
-}
-
-bool Basic_Agent::pack_secretion_row( double dt,
-	int& voxel_out, double* temp1_out, double* temp2_out, double* export2_out )
-{
-	if( !is_active ) { voxel_out = -1; return false; }
-	if( volume_is_changed )
-	{
-		set_internal_uptake_constants( dt );
-		volume_is_changed = false;
-	}
-	voxel_out = current_voxel_index;
-	const unsigned int ns = (unsigned int)cell_source_sink_solver_temp1.size();
-	for( unsigned int s = 0; s < ns; s++ )
-	{
-		temp1_out[s]   = cell_source_sink_solver_temp1[s];
-		temp2_out[s]   = cell_source_sink_solver_temp2[s];
-		export2_out[s] = cell_source_sink_solver_temp_export2[s];
-	}
-	return true;
 }
 
 };

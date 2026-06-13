@@ -48,8 +48,20 @@
 
 #include "BioFVM_microenvironment.h"
 #include "BioFVM_solvers.h"
+#include "BioFVM_diffusion_cuda.h"
 #include "BioFVM_vector.h"
 #include <cmath>
+#ifdef BIOFVM_PROFILE_PACK
+#include <chrono>
+#include <cstdio>
+long long _pack_ns = 0, _solve_ns = 0, _unpack_ns = 0;
+namespace { struct _PackProfReport { ~_PackProfReport() {
+	double p=_pack_ns*1e-9, s=_solve_ns*1e-9, u=_unpack_ns*1e-9, t=p+s+u;
+	if(t>0) std::fprintf(stderr,
+		"\n[PROFILE_PACK] diffusion total=%.2fs  pack=%.2fs (%.1f%%)  solve=%.2fs (%.1f%%)  unpack=%.2fs (%.1f%%)\n",
+		t,p,100*p/t,s,100*s/t,u,100*u/t);
+} } _pack_prof_report_instance; }
+#endif
 
 #include "BioFVM_basic_agent.h"
 
@@ -123,11 +135,19 @@ Microenvironment::Microenvironment()
 	one.resize( 1 , 1.0 ); 
 	zero.resize( 1 , 0.0 );
 	
-	temporary_density_vectors1.resize( mesh.voxels.size() , zero ); 
-	temporary_density_vectors2.resize( mesh.voxels.size() , zero ); 
+	temporary_density_vectors1.resize( mesh.voxels.size() , zero );
+	temporary_density_vectors2.resize( mesh.voxels.size() , zero );
 	p_density_vectors = &temporary_density_vectors1;
 
-	gradient_vectors.resize( mesh.voxels.size() ); 
+	soa_density1.assign( mesh.voxels.size() * zero.size(), 0.0 );
+	soa_density2.assign( mesh.voxels.size() * zero.size(), 0.0 );
+	soa_p   = soa_density1.data();
+	soa_old = soa_density2.data();
+	soa_is_authoritative = false;
+	aos_dirty = false;
+	soa_dirty = false;
+
+	gradient_vectors.resize( mesh.voxels.size() );
 	for( unsigned int k=0 ; k < mesh.voxels.size() ; k++ )
 	{
 		gradient_vectors[k].resize( 1 ); 
@@ -276,24 +296,25 @@ void Microenvironment::apply_dirichlet_conditions( void )
 	{ density_vector( dirichlet_indices[i] ) = dirichlet_value_vectors[i]; }
 	*/
 
-	// #pragma omp parallel for 
-	for( unsigned int i=0 ; i < mesh.voxels.size() ;i++ )
+	const unsigned int nv_d = mesh.voxels.size();
+	const unsigned int ns_d = number_of_densities();
+	#pragma omp parallel for
+	for( unsigned int i=0 ; i < nv_d ; i++ )
 	{
-		/*
-		if( mesh.voxels[i].is_Dirichlet == true )
-		{ density_vector(i) = dirichlet_value_vectors[i]; }
-		*/
 		if( mesh.voxels[i].is_Dirichlet == true )
 		{
-			for( unsigned int j=0; j < dirichlet_value_vectors[i].size(); j++ )
+			for( unsigned int j=0; j < ns_d; j++ )
 			{
-				// if( dirichlet_activation_vector[j] == true )
 				if( dirichlet_activation_vectors[i][j] == true )
 				{
-					density_vector(i)[j] = dirichlet_value_vectors[i][j]; 
+					const double val = dirichlet_value_vectors[i][j];
+					// Write both raw buffers directly. Do NOT go through the density_vector()
+					// accessor here: it triggers lazy SoA<->AoS sync, which is illegal inside
+					// this parallel region and mid-solve (nested parallelism + state corruption).
+					(*p_density_vectors)[i][j] = val;
+					if( soa_p ) soa_p[j * nv_d + i] = val;
 				}
 			}
-	
 		}
 	}
 	return; 
@@ -326,18 +347,35 @@ void Microenvironment::resize_voxels( int new_number_of_voxes )
 	
 	dirichlet_value_vectors.assign( mesh.voxels.size(), one ); 
 
-	dirichlet_activation_vectors.assign( mesh.voxels.size() , dirichlet_activation_vector ); 
-	
-	return; 
+	dirichlet_activation_vectors.assign( mesh.voxels.size() , dirichlet_activation_vector );
+
+	resize_soa_buffers();
+
+	return;
 }
 
 
+void Microenvironment::resize_soa_buffers( void )
+{
+	const unsigned int n = mesh.voxels.size() * number_of_densities();
+	soa_density1.assign( n, 0.0 );
+	soa_density2.assign( n, 0.0 );
+	soa_p   = soa_density1.data();
+	soa_old = soa_density2.data();
+	soa_is_authoritative = false;
+	// SoA was just re-zeroed but AoS may hold real densities (resize preserves AoS);
+	// treat AoS as the source of truth so the next solve re-packs it.
+	aos_dirty = true;
+	soa_dirty = false;
+}
+
 void Microenvironment::resize_space( int x_nodes, int y_nodes, int z_nodes )
 {
-	mesh.resize( x_nodes, y_nodes , z_nodes ); 
+	mesh.resize( x_nodes, y_nodes , z_nodes );
 
-	temporary_density_vectors1.assign( mesh.voxels.size() , zero ); 
-	temporary_density_vectors2.assign( mesh.voxels.size() , zero ); 
+	temporary_density_vectors1.assign( mesh.voxels.size() , zero );
+	temporary_density_vectors2.assign( mesh.voxels.size() , zero );
+	resize_soa_buffers();
 		
 	gradient_vectors.resize( mesh.voxels.size() ); 
 	for( unsigned int k=0 ; k < mesh.voxels.size() ; k++ )
@@ -359,10 +397,11 @@ void Microenvironment::resize_space( int x_nodes, int y_nodes, int z_nodes )
 
 void Microenvironment::resize_space( double x_start, double x_end, double y_start, double y_end, double z_start, double z_end , int x_nodes, int y_nodes, int z_nodes )
 {
-	mesh.resize( x_start, x_end, y_start, y_end, z_start, z_end, x_nodes, y_nodes , z_nodes  ); 
+	mesh.resize( x_start, x_end, y_start, y_end, z_start, z_end, x_nodes, y_nodes , z_nodes  );
 
-	temporary_density_vectors1.assign( mesh.voxels.size() , zero ); 
-	temporary_density_vectors2.assign( mesh.voxels.size() , zero ); 
+	temporary_density_vectors1.assign( mesh.voxels.size() , zero );
+	temporary_density_vectors2.assign( mesh.voxels.size() , zero );
+	resize_soa_buffers();
 	
 	gradient_vectors.resize( mesh.voxels.size() ); 
 	for( unsigned int k=0 ; k < mesh.voxels.size() ; k++ )
@@ -384,10 +423,11 @@ void Microenvironment::resize_space( double x_start, double x_end, double y_star
 
 void Microenvironment::resize_space( double x_start, double x_end, double y_start, double y_end, double z_start, double z_end , double dx_new , double dy_new , double dz_new )
 {
-	mesh.resize( x_start, x_end, y_start, y_end, z_start, z_end,  dx_new , dy_new , dz_new ); 
+	mesh.resize( x_start, x_end, y_start, y_end, z_start, z_end,  dx_new , dy_new , dz_new );
 
-	temporary_density_vectors1.assign( mesh.voxels.size() , zero ); 
-	temporary_density_vectors2.assign( mesh.voxels.size() , zero ); 
+	temporary_density_vectors1.assign( mesh.voxels.size() , zero );
+	temporary_density_vectors2.assign( mesh.voxels.size() , zero );
+	resize_soa_buffers();
 	
 	gradient_vectors.resize( mesh.voxels.size() ); 
 	for( unsigned int k=0 ; k < mesh.voxels.size() ; k++ )
@@ -419,17 +459,18 @@ void Microenvironment::resize_densities( int new_size )
 
 	temporary_density_vectors1.assign( mesh.voxels.size() , zero );
 	temporary_density_vectors2.assign( mesh.voxels.size() , zero );
+	resize_soa_buffers();
 
 	for( unsigned int k=0 ; k < mesh.voxels.size() ; k++ )
 	{
-		gradient_vectors[k].resize( number_of_densities() ); 
+		gradient_vectors[k].resize( number_of_densities() );
 		for( unsigned int i=0 ; i < number_of_densities() ; i++ )
 		{
 			(gradient_vectors[k])[i].resize( 3, 0.0 );
 		}
 	}
-	gradient_vector_computed.resize( mesh.voxels.size() , false ); 	
-	
+	gradient_vector_computed.resize( mesh.voxels.size() , false );
+
 	diffusion_coefficients.assign( new_size , 0.0 ); 
 	decay_rates.assign( new_size , 0.0 ); 
 
@@ -549,14 +590,17 @@ void Microenvironment::add_density( std::string name , std::string units, double
 	default_microenvironment_options.Dirichlet_zmin.push_back( false ); 
 	default_microenvironment_options.Dirichlet_zmax.push_back( false ); 
 	
-	default_microenvironment_options.Dirichlet_xmin_values.push_back( 1.0 ); 
-	default_microenvironment_options.Dirichlet_xmax_values.push_back( 1.0 ); 
-	default_microenvironment_options.Dirichlet_ymin_values.push_back( 1.0 ); 
-	default_microenvironment_options.Dirichlet_ymax_values.push_back( 1.0 ); 
-	default_microenvironment_options.Dirichlet_zmin_values.push_back( 1.0 ); 
-	default_microenvironment_options.Dirichlet_zmax_values.push_back( 1.0 ); 	
+	default_microenvironment_options.Dirichlet_xmin_values.push_back( 1.0 );
+	default_microenvironment_options.Dirichlet_xmax_values.push_back( 1.0 );
+	default_microenvironment_options.Dirichlet_ymin_values.push_back( 1.0 );
+	default_microenvironment_options.Dirichlet_ymax_values.push_back( 1.0 );
+	default_microenvironment_options.Dirichlet_zmin_values.push_back( 1.0 );
+	default_microenvironment_options.Dirichlet_zmax_values.push_back( 1.0 );
 
-	return; 
+	// SoA buffer must grow to match the new substrate count
+	resize_soa_buffers();
+
+	return;
 }
 
 int Microenvironment::find_density_index( std::string name )
@@ -612,41 +656,160 @@ std::vector<unsigned int> Microenvironment::nearest_cartesian_indices( std::vect
 Voxel& Microenvironment::nearest_voxel( std::vector<double>& position )
 { return mesh.nearest_voxel( position ); }
 
+// NOTE on lazy sync: these accessors expose the AoS buffer. Before handing out a
+// reference we flush any pending SoA results into AoS (sync_aos_from_soa_if_dirty).
+// Because that call clears soa_dirty, repeated accessor calls within the same step
+// do the unpack at most once. Accessors that may be WRITTEN through additionally set
+// aos_dirty so the next diffusion solve re-packs the external write into SoA.
 std::vector<double>& Microenvironment::nearest_density_vector( std::vector<double>& position )
-{ return (*p_density_vectors)[ mesh.nearest_voxel_index( position ) ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ mesh.nearest_voxel_index( position ) ]; }
 
 std::vector<double>& Microenvironment::nearest_density_vector( int voxel_index )
-{ return (*p_density_vectors)[ voxel_index ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ voxel_index ]; }
 
 std::vector<double>& Microenvironment::operator()( int i, int j, int k )
-{ return (*p_density_vectors)[ voxel_index(i,j,k) ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ voxel_index(i,j,k) ]; }
 
 std::vector<double>& Microenvironment::operator()( int i, int j )
-{ return (*p_density_vectors)[ voxel_index(i,j,0) ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ voxel_index(i,j,0) ]; }
 
 std::vector<double>& Microenvironment::operator()( int n )
-{ return (*p_density_vectors)[ n ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ n ]; }
 
 std::vector<double>& Microenvironment::density_vector( int i, int j, int k )
-{ return (*p_density_vectors)[ voxel_index(i,j,k) ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ voxel_index(i,j,k) ]; }
 
 std::vector<double>& Microenvironment::density_vector( int i, int j )
-{ return (*p_density_vectors)[ voxel_index(i,j,0) ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ voxel_index(i,j,0) ]; }
 
 std::vector<double>& Microenvironment::density_vector( int n )
-{ return (*p_density_vectors)[ n ]; }
+{ sync_aos_from_soa_if_dirty(); aos_dirty = true; return (*p_density_vectors)[ n ]; }
+
+// AoS -> SoA: density[substrate * n_voxels + voxel] = p_density_vectors[voxel][substrate]
+// Download the resident device field into soa_p exactly when a host SoA access is
+// about to happen, then drop residency. This is the single point that turns the
+// per-step field transfer into an on-demand one: between consecutive GPU steps no
+// host reads occur, so no download happens.
+void Microenvironment::sync_soa_from_gpu_if_resident( void )
+{
+	if( !gpu_resident )
+		return;
+	if( gpu_field_handle != nullptr )
+		gpu_download( (gpu_field*)gpu_field_handle, soa_p );
+	gpu_resident = false;
+}
+
+void Microenvironment::pack_to_soa( void )
+{
+	const unsigned int nv = mesh.voxels.size();
+	const unsigned int ns = number_of_densities();
+	if( soa_density1.size() < ns * nv )
+	{
+		std::cerr << "BioFVM ERROR: SoA buffer too small in pack_to_soa(). "
+		          << "size=" << soa_density1.size() << " needed=" << ns*nv
+		          << ". Call resize_soa_buffers() after changing mesh or substrates." << std::endl;
+		exit(-1);
+	}
+	// Substrate-parallel: SoA write dst[v] is contiguous (stride-1), AoS read is strided.
+	// This direction favors the contiguous SoA store.
+	const auto& src = *p_density_vectors;
+	#pragma omp parallel for
+	for( unsigned int s = 0; s < ns; s++ )
+	{
+		double* __restrict__ dst = soa_p + s * nv;
+		for( unsigned int v = 0; v < nv; v++ )
+			dst[v] = src[v][s];
+	}
+}
+
+// SoA -> AoS: p_density_vectors[voxel][substrate] = density[substrate * n_voxels + voxel]
+void Microenvironment::unpack_from_soa( void )
+{
+	// If the device holds the authoritative field, refresh soa_p from it first.
+	sync_soa_from_gpu_if_resident();
+	const unsigned int nv = mesh.voxels.size();
+	const unsigned int ns = number_of_densities();
+	if( soa_density1.size() < ns * nv )
+	{
+		std::cerr << "BioFVM ERROR: SoA buffer too small in unpack_from_soa(). "
+		          << "size=" << soa_density1.size() << " needed=" << ns*nv << std::endl;
+		exit(-1);
+	}
+	// Parallelize over voxels (nv >> ns) for better load balance.
+	// SoA read is strided by nv; AoS write dst[v] is a contiguous ns-element vector.
+	auto& dst = *p_density_vectors;
+	const double* __restrict__ soa = soa_p;
+	#pragma omp parallel for schedule(static)
+	for( unsigned int v = 0; v < nv; v++ )
+	{
+		double* __restrict__ row = dst[v].data();
+		for( unsigned int s = 0; s < ns; s++ )
+			row[s] = soa[s * nv + v];
+	}
+}
+
+void Microenvironment::sync_to_aos_if_needed( void )
+{
+	if( soa_is_authoritative )
+		unpack_from_soa();
+}
+
+// Lazy sync: pack AoS->SoA only if AoS has unflushed writes (e.g. external dose, dirichlet, init).
+void Microenvironment::sync_soa_from_aos_if_dirty( void )
+{
+	if( aos_dirty )
+	{
+		pack_to_soa();
+		aos_dirty = false;
+	}
+}
+
+// Lazy sync: unpack SoA->AoS only if SoA has unflushed results (after a diffusion solve / SoA secretion).
+// Also unpacks when the device field is resident (authoritative on the GPU): unpack_from_soa()
+// pulls it down first via sync_soa_from_gpu_if_resident().
+void Microenvironment::sync_aos_from_soa_if_dirty( void )
+{
+	if( soa_dirty || gpu_resident )
+	{
+		unpack_from_soa();
+		soa_dirty = false;
+	}
+}
 
 void Microenvironment::simulate_diffusion_decay( double dt )
 {
 	if( diffusion_decay_solver )
-	{ diffusion_decay_solver( *this, dt ); }
+	{
+#ifdef BIOFVM_PROFILE_PACK
+		auto _t0 = std::chrono::high_resolution_clock::now();
+		pack_to_soa();
+		auto _t1 = std::chrono::high_resolution_clock::now();
+		diffusion_decay_solver( *this, dt );
+		auto _t2 = std::chrono::high_resolution_clock::now();
+		unpack_from_soa();
+		auto _t3 = std::chrono::high_resolution_clock::now();
+		_pack_ns   += std::chrono::duration_cast<std::chrono::nanoseconds>(_t1-_t0).count();
+		_solve_ns  += std::chrono::duration_cast<std::chrono::nanoseconds>(_t2-_t1).count();
+		_unpack_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(_t3-_t2).count();
+#else
+		// SoA is authoritative across diffusion steps: secretion reads/writes SoA directly,
+		// so we neither pack before nor unpack after the solve. The only time we pack is when
+		// an external AoS write occurred (aos_dirty: dose, dirichlet, init) — handled lazily.
+		// After the solve, SoA holds the result; soa_dirty defers the single AoS unpack to the
+		// next genuine AoS reader (sensing on the phenotype cadence, or file I/O).
+		sync_soa_from_aos_if_dirty();
+		diffusion_decay_solver( *this, dt );
+		soa_is_authoritative = true;
+		soa_dirty = true;
+#endif
+	}
 	else
 	{
-		std::cout << "Warning: diffusion-reaction-source/sink solver not set for Microenvironment object at " << this << ". Nothing happened!" << std::endl; 
-		std::cout << "   Consider using Microenvironment::auto_choose_diffusion_decay_solver(void) ... " << std::endl 
-		<< std::endl; 
+		std::cout << "Warning: diffusion-reaction-source/sink solver not set for Microenvironment object at " << this << ". Nothing happened!" << std::endl;
+		std::cout << "   Consider using Microenvironment::auto_choose_diffusion_decay_solver(void) ... " << std::endl
+		<< std::endl;
 	}
-	return; 
+	return;
 }
 
 void Microenvironment::auto_choose_diffusion_decay_solver( void )
@@ -703,8 +866,9 @@ unsigned int Microenvironment::number_of_voxel_faces( void )
 
 void Microenvironment::write_to_matlab( std::string filename )
 {
+	sync_aos_from_soa_if_dirty(); // flush diffusion results to AoS before reading it for output
 	int number_of_data_entries = mesh.voxels.size();
-	int size_of_each_datum = 3 + 1 + (*p_density_vectors)[0].size(); 
+	int size_of_each_datum = 3 + 1 + (*p_density_vectors)[0].size();
 
 	FILE* fp = write_matlab_header( size_of_each_datum, number_of_data_entries,  filename, "multiscale_microenvironment" );  
 
@@ -773,6 +937,107 @@ void Microenvironment::simulate_cell_sources_and_sinks( std::vector<Basic_Agent*
 void Microenvironment::simulate_cell_sources_and_sinks( double dt )
 {
 	simulate_cell_sources_and_sinks(all_basic_agents, dt);
+}
+
+void Microenvironment::simulate_diffusion_and_secretion_gpu( double dt )
+{
+	// This combined step is only valid with the GPU LOD solver selected.
+	if( diffusion_decay_solver != diffusion_decay_solver__constant_coefficients_LOD_3D_GPU )
+	{
+		// Not in GPU mode: fall back to the standard two-call sequence so the method
+		// is always safe to call.
+		simulate_diffusion_decay( dt );
+		simulate_cell_sources_and_sinks( dt );
+		return;
+	}
+
+	// First call also performs solver setup (and a fused first diffusion step) on the
+	// CPU; do that the normal way, then the cell step, so coefficients exist before we
+	// build the device field. Subsequent calls take the resident fast path below.
+	if( !diffusion_solver_setup_done )
+	{
+		simulate_diffusion_decay( dt );          // CPU setup + first solve, leaves soa_p current
+		simulate_cell_sources_and_sinks( dt );
+		return;
+	}
+
+	gpu_field* g = gpu_ensure_field( *this );
+
+	// Detect whether any Dirichlet nodes exist (no precomputed index list in BioFVM).
+	// Cheap O(nv) scan with early-out; negligible vs. the diffusion solve. When present,
+	// we route the field through the host to re-impose them (see below).
+	bool has_dirichlet = false;
+	{
+		const unsigned int nvox = mesh.voxels.size();
+		for( unsigned int i = 0; i < nvox; i++ )
+			if( mesh.voxels[i].is_Dirichlet ) { has_dirichlet = true; break; }
+	}
+
+	// ---- get the field onto the device, uploading only when necessary ----
+	// If we are already resident (device authoritative, soa_p stale) AND there are no
+	// external host writes pending AND no Dirichlet nodes to re-impose on the host, the
+	// device field is already current from the previous step: skip the upload entirely.
+	// This is what makes the steady-state per-step field transfer ZERO.
+	const bool host_wrote = aos_dirty;          // external AoS write (dose/init) pending
+	if( host_wrote )
+		sync_soa_from_aos_if_dirty();           // pack AoS -> soa_p
+
+	if( !gpu_resident || host_wrote || has_dirichlet )
+	{
+		// Need the current field in soa_p, then upload. When resident, first pull the
+		// device's authoritative copy down (so dirichlet/host edits compose correctly).
+		sync_soa_from_gpu_if_resident();        // device -> soa_p (clears gpu_resident)
+		if( has_dirichlet )
+			apply_dirichlet_conditions();        // writes both AoS and soa_p
+		gpu_upload( g, get_soa_p() );
+	}
+	// else: device already holds the up-to-date field; nothing to upload.
+
+	gpu_solve_3D_LOD( g );
+
+	// ---- pack per-cell secretion batch from all active cells (small transfer) ----
+	// Reuse a persistent batch buffer across steps to avoid per-step (re)allocation of
+	// the n*ns coefficient arrays (these dominated the fallback step time otherwise).
+	const unsigned int ns = number_of_densities();
+	const unsigned int n  = (unsigned int)all_basic_agents.size();
+	static gpu_secretion_batch batch; // persistent across steps (serial stepping)
+	batch.n_cells = n;
+	if( batch.voxel.size() != n )        batch.voxel.resize( n );
+	if( batch.temp1.size() != (size_t)n*ns )
+	{
+		batch.temp1.resize( (size_t)n*ns );
+		batch.temp2.resize( (size_t)n*ns );
+		batch.temp_export2.resize( (size_t)n*ns );
+	}
+	#pragma omp parallel for
+	for( unsigned int c = 0; c < n; c++ )
+	{
+		all_basic_agents[c]->pack_secretion_row( dt, batch.voxel[c],
+			&batch.temp1[(size_t)c*ns], &batch.temp2[(size_t)c*ns],
+			&batch.temp_export2[(size_t)c*ns] );
+	}
+	gpu_apply_secretion( g, batch );
+
+	// ---- leave the field resident on the device; do NOT download ----
+	// The authoritative field now lives on the device. soa_p is stale. The next genuine
+	// host read (sensing / I/O via unpack_from_soa) will trigger exactly one download
+	// through sync_soa_from_gpu_if_resident(). Between consecutive GPU steps there is no
+	// host read, so no field transfer occurs.
+	gpu_resident = true;
+	soa_is_authoritative = true;
+	// soa_dirty stays false: the up-to-date data is on the device, not in soa_p. The
+	// download path (gpu_resident) is what refreshes AoS, via unpack_from_soa.
+
+	if( has_dirichlet )
+	{
+		// Re-impose Dirichlet on the device-backed field by routing through the host:
+		// pull down, apply, push back. Only when Dirichlet nodes exist.
+		sync_soa_from_gpu_if_resident();
+		apply_dirichlet_conditions();
+		gpu_upload( g, get_soa_p() );
+		gpu_resident = true;
+	}
+	return;
 }
 
 void Microenvironment::update_rates( void )
@@ -845,224 +1110,153 @@ std::vector<gradient>& Microenvironment::nearest_gradient_vector( std::vector<do
 
 void Microenvironment::compute_all_gradient_vectors( void )
 {
-	static double two_dx = mesh.dx; 
-	static double two_dy = mesh.dy; 
-	static double two_dz = mesh.dz; 
-	static bool gradient_constants_defined = false; 
+	static double inv_dx = 0.0;
+	static double inv_dy = 0.0;
+	static double inv_dz = 0.0;
+	static double inv_two_dx = 0.0;
+	static double inv_two_dy = 0.0;
+	static double inv_two_dz = 0.0;
+	static bool gradient_constants_defined = false;
 	if( gradient_constants_defined == false )
 	{
-		two_dx *= 2.0; 
-		two_dy *= 2.0; 
-		two_dz *= 2.0;
-		gradient_constants_defined = true; 
+		inv_dx     = 1.0 / mesh.dx;
+		inv_dy     = 1.0 / mesh.dy;
+		inv_dz     = 1.0 / mesh.dz;
+		inv_two_dx = 1.0 / ( 2.0 * mesh.dx );
+		inv_two_dy = 1.0 / ( 2.0 * mesh.dy );
+		inv_two_dz = 1.0 / ( 2.0 * mesh.dz );
+		gradient_constants_defined = true;
 	}
-	
-	#pragma omp parallel for 
+
+	const unsigned int nq = number_of_densities();
+	const unsigned int nv_g = mesh.voxels.size();
+	const bool has_z = ( mesh.z_coordinates.size() > 1 );
+	// read from SoA buffer for cache-friendly substrate-stride-1 access
+	const double* __restrict__ soa_g = soa_p;
+
+	#pragma omp parallel for collapse(2)
 	for( unsigned int k=0; k < mesh.z_coordinates.size() ; k++ )
 	{
 		for( unsigned int j=0; j < mesh.y_coordinates.size() ; j++ )
 		{
-			// endcaps 
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
+			for( unsigned int i=0; i < mesh.x_coordinates.size() ; i++ )
 			{
-				int i = 0; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][0] = (*p_density_vectors)[n+thomas_i_jump][q]; 
-				gradient_vectors[n][q][0] -= (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][0] /= mesh.dx; 
-				
-				gradient_vector_computed[n] = true; 
-			}
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
-			{
-				int i = mesh.x_coordinates.size()-1; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][0] = (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][0] -= (*p_density_vectors)[n-thomas_i_jump][q]; 
-				gradient_vectors[n][q][0] /= mesh.dx; 
-				
-				gradient_vector_computed[n] = true; 
-			}
-			
-			for( unsigned int i=1; i < mesh.x_coordinates.size()-1 ; i++ )
-			{
-				for( unsigned int q=0; q < number_of_densities() ; q++ )
-				{
-					int n = voxel_index(i,j,k);
-					// x-derivative of qth substrate at voxel n
-					gradient_vectors[n][q][0] = (*p_density_vectors)[n+thomas_i_jump][q]; 
-					gradient_vectors[n][q][0] -= (*p_density_vectors)[n-thomas_i_jump][q]; 
-					gradient_vectors[n][q][0] /= two_dx; 
-					
-					gradient_vector_computed[n] = true; 
- 				}
-			}
-			
-		}
-	}
-	
-	#pragma omp parallel for 
-	for( unsigned int k=0; k < mesh.z_coordinates.size() ; k++ )
-	{
-		for( unsigned int i=0; i < mesh.x_coordinates.size() ; i++ )
-		{
-			// endcaps 
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
-			{
-				int j = 0; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][1] = (*p_density_vectors)[n+thomas_j_jump][q]; 
-				gradient_vectors[n][q][1] -= (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][1] /= mesh.dy; 
-				
-				gradient_vector_computed[n] = true; 
-			}
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
-			{
-				int j = mesh.y_coordinates.size()-1; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][1] = (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][1] -= (*p_density_vectors)[n-thomas_j_jump][q]; 
-				gradient_vectors[n][q][1] /= mesh.dy; 
-				
-				gradient_vector_computed[n] = true; 
-			}		
-			
-			for( unsigned int j=1; j < mesh.y_coordinates.size()-1 ; j++ )
-			{
-				for( unsigned int q=0; q < number_of_densities() ; q++ )
-				{
-					int n = voxel_index(i,j,k);
-					// y-derivative of qth substrate at voxel n
-					gradient_vectors[n][q][1] = (*p_density_vectors)[n+thomas_j_jump][q]; 
-					gradient_vectors[n][q][1] -= (*p_density_vectors)[n-thomas_j_jump][q]; 
-					gradient_vectors[n][q][1] /= two_dy; 
-					gradient_vector_computed[n] = true; 
-				}
-			}
-			
-		}
-	}
-	
-	// don't bother computing z component if there is no z-directoin 
-	if( mesh.z_coordinates.size() == 1 )
-	{ return; }
+				const int n = voxel_index(i,j,k);
 
-	#pragma omp parallel for 
-	for( unsigned int j=0; j < mesh.y_coordinates.size() ; j++ )
-	{
-		for( unsigned int i=0; i < mesh.x_coordinates.size() ; i++ )
-		{
-			// endcaps 
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
-			{
-				int k = 0; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][2] = (*p_density_vectors)[n+thomas_k_jump][q]; 
-				gradient_vectors[n][q][2] -= (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][2] /= mesh.dz; 
-				
-				gradient_vector_computed[n] = true; 
-			}
-			for( unsigned int q=0; q < number_of_densities() ; q++ )
-			{
-				int k = mesh.z_coordinates.size()-1; 
-				int n = voxel_index(i,j,k);
-				// x-derivative of qth substrate at voxel n
-				gradient_vectors[n][q][2] = (*p_density_vectors)[n][q]; 
-				gradient_vectors[n][q][2] -= (*p_density_vectors)[n-thomas_k_jump][q]; 
-				gradient_vectors[n][q][2] /= mesh.dz; 
-				
-				gradient_vector_computed[n] = true; 
-			}			
-			
-			for( unsigned int k=1; k < mesh.z_coordinates.size()-1 ; k++ )
-			{
-				for( unsigned int q=0; q < number_of_densities() ; q++ )
+				// --- x-gradient: read soa_g[q*nv + n] ---
+				if( i == 0 )
 				{
-					int n = voxel_index(i,j,k);
-					// y-derivative of qth substrate at voxel n
-					gradient_vectors[n][q][2] = (*p_density_vectors)[n+thomas_k_jump][q]; 
-					gradient_vectors[n][q][2] -= (*p_density_vectors)[n-thomas_k_jump][q]; 
-					gradient_vectors[n][q][2] /= two_dz; 
-					gradient_vector_computed[n] = true; 
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][0] = ( soa_g[q*nv_g+n+thomas_i_jump] - soa_g[q*nv_g+n] ) * inv_dx;
 				}
+				else if( i == mesh.x_coordinates.size()-1 )
+				{
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][0] = ( soa_g[q*nv_g+n] - soa_g[q*nv_g+n-thomas_i_jump] ) * inv_dx;
+				}
+				else
+				{
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][0] = ( soa_g[q*nv_g+n+thomas_i_jump] - soa_g[q*nv_g+n-thomas_i_jump] ) * inv_two_dx;
+				}
+
+				// --- y-gradient ---
+				if( j == 0 )
+				{
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][1] = ( soa_g[q*nv_g+n+thomas_j_jump] - soa_g[q*nv_g+n] ) * inv_dy;
+				}
+				else if( j == mesh.y_coordinates.size()-1 )
+				{
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][1] = ( soa_g[q*nv_g+n] - soa_g[q*nv_g+n-thomas_j_jump] ) * inv_dy;
+				}
+				else
+				{
+					for( unsigned int q=0; q < nq ; q++ )
+						gradient_vectors[n][q][1] = ( soa_g[q*nv_g+n+thomas_j_jump] - soa_g[q*nv_g+n-thomas_j_jump] ) * inv_two_dy;
+				}
+
+				// --- z-gradient ---
+				if( has_z )
+				{
+					if( k == 0 )
+					{
+						for( unsigned int q=0; q < nq ; q++ )
+							gradient_vectors[n][q][2] = ( soa_g[q*nv_g+n+thomas_k_jump] - soa_g[q*nv_g+n] ) * inv_dz;
+					}
+					else if( k == mesh.z_coordinates.size()-1 )
+					{
+						for( unsigned int q=0; q < nq ; q++ )
+							gradient_vectors[n][q][2] = ( soa_g[q*nv_g+n] - soa_g[q*nv_g+n-thomas_k_jump] ) * inv_dz;
+					}
+					else
+					{
+						for( unsigned int q=0; q < nq ; q++ )
+							gradient_vectors[n][q][2] = ( soa_g[q*nv_g+n+thomas_k_jump] - soa_g[q*nv_g+n-thomas_k_jump] ) * inv_two_dz;
+					}
+				}
+
+				gradient_vector_computed[n] = true;
 			}
-			
 		}
 	}
 
-	return; 
+	return;
 }
 
 void Microenvironment::compute_gradient_vector( int n )
 {
-	static double two_dx = mesh.dx; 
-	static double two_dy = mesh.dy; 
-	static double two_dz = mesh.dz; 
-	static bool gradient_constants_defined = false; 
+	static double inv_two_dx = 0.0;
+	static double inv_two_dy = 0.0;
+	static double inv_two_dz = 0.0;
+	static bool gradient_constants_defined = false;
 	std::vector<unsigned int> indices(3,0);
-	
+
 	if( gradient_constants_defined == false )
 	{
-		two_dx *= 2.0; 
-		two_dy *= 2.0; 
-		two_dz *= 2.0;
-		gradient_constants_defined = true; 
-	}	
-	
+		inv_two_dx = 1.0 / ( 2.0 * mesh.dx );
+		inv_two_dy = 1.0 / ( 2.0 * mesh.dy );
+		inv_two_dz = 1.0 / ( 2.0 * mesh.dz );
+		gradient_constants_defined = true;
+	}
+
 	indices = cartesian_indices( n );
-	
-	// d/dx 
+	const unsigned int nq = number_of_densities();
+	const unsigned int nv_g = mesh.voxels.size();
+	const double* __restrict__ sg = soa_p;
+
+	// d/dx
 	if( indices[0] > 0 && indices[0] < mesh.x_coordinates.size()-1 )
 	{
-		for( unsigned int q=0; q < number_of_densities() ; q++ )
-		{
-			gradient_vectors[n][q][0] = (*p_density_vectors)[n+thomas_i_jump][q]; 
-			gradient_vectors[n][q][0] -= (*p_density_vectors)[n-thomas_i_jump][q]; 
-			gradient_vectors[n][q][0] /= two_dx; 
-			gradient_vector_computed[n] = true; 
-		}
+		for( unsigned int q=0; q < nq ; q++ )
+			gradient_vectors[n][q][0] = ( sg[q*nv_g + n+thomas_i_jump] - sg[q*nv_g + n-thomas_i_jump] ) * inv_two_dx;
+		gradient_vector_computed[n] = true;
 	}
-	
-	// don't bother computing y and z component if there is no y-direction. (1D)
+
 	if( mesh.y_coordinates.size() == 1 )
-	{ return; }	
-	
-	// d/dy 
+	{ return; }
+
+	// d/dy
 	if( indices[1] > 0 && indices[1] < mesh.y_coordinates.size()-1 )
 	{
-		for( unsigned int q=0; q < number_of_densities() ; q++ )
-		{
-			gradient_vectors[n][q][1] = (*p_density_vectors)[n+thomas_j_jump][q]; 
-			gradient_vectors[n][q][1] -= (*p_density_vectors)[n-thomas_j_jump][q]; 
-			gradient_vectors[n][q][1] /= two_dy; 
-			gradient_vector_computed[n] = true; 
-		}
+		for( unsigned int q=0; q < nq ; q++ )
+			gradient_vectors[n][q][1] = ( sg[q*nv_g + n+thomas_j_jump] - sg[q*nv_g + n-thomas_j_jump] ) * inv_two_dy;
+		gradient_vector_computed[n] = true;
 	}
-	
-	// don't bother computing z component if there is no z-direction (2D) 
+
 	if( mesh.z_coordinates.size() == 1 )
 	{ return; }
-	
-	// d/dz 
+
+	// d/dz
 	if( indices[2] > 0 && indices[2] < mesh.z_coordinates.size()-1 )
 	{
-		for( unsigned int q=0; q < number_of_densities() ; q++ )
-		{
-			gradient_vectors[n][q][2] = (*p_density_vectors)[n+thomas_k_jump][q]; 
-			gradient_vectors[n][q][2] -= (*p_density_vectors)[n-thomas_k_jump][q]; 
-			gradient_vectors[n][q][2] /= two_dz; 
-			gradient_vector_computed[n] = true; 
-		}
+		for( unsigned int q=0; q < nq ; q++ )
+			gradient_vectors[n][q][2] = ( sg[q*nv_g + n+thomas_k_jump] - sg[q*nv_g + n-thomas_k_jump] ) * inv_two_dz;
+		gradient_vector_computed[n] = true;
 	}
-	
-	return; 
+
+	return;
 }
 
 void Microenvironment::reset_all_gradient_vectors( void )
