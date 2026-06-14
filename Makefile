@@ -157,11 +157,14 @@ BIOFVM_ORIG_DIR := BioFVM copy
 
 # Baseline uses current microenvironment (same ABI), but original solvers/agent code
 # compiled from BioFVM/*_baseline.cpp (copies of original logic, new header)
+# BioFVM_diffusion_cuda.o is required even in the original-solver build because the
+# shared (current) BioFVM_microenvironment.o references the GPU-resident hooks; the
+# baseline simply never selects the GPU solver at runtime.
 BIOFVM_BASELINE_OBJECTS := \
 	BioFVM_vector.o BioFVM_mesh.o BioFVM_microenvironment.o \
 	BioFVM_solvers_baseline.o BioFVM_matlab.o BioFVM_utilities.o \
 	BioFVM_basic_agent_baseline.o BioFVM_MultiCellDS.o \
-	BioFVM_agent_container.o
+	BioFVM_agent_container.o BioFVM_diffusion_cuda.o
 
 BENCH_OBJECTS_OPT  := $(BioFVM_OBJECTS) $(pugixml_OBJECTS) $(PhysiCell_core_OBJECTS) $(PhysiCell_module_OBJECTS) $(PhysiCell_custom_module_OBJECTS)
 BENCH_OBJECTS_ORIG := $(BIOFVM_BASELINE_OBJECTS) $(pugixml_OBJECTS) $(PhysiCell_core_OBJECTS) $(PhysiCell_module_OBJECTS) $(PhysiCell_custom_module_OBJECTS)
@@ -234,6 +237,22 @@ benchmark: project_opt project_orig
 	@echo "original :" $$(grep "wall time" /tmp/bench_orig.txt | tail -1)
 	@echo "optimized:" $$(grep "wall time" /tmp/bench_opt.txt  | tail -1)
 	@echo ""
+
+# CORRECTNESS: run original vs optimized BioFVM on the same short config and
+# numerically diff the microenvironment output. A valid acceleration must produce
+# the same field (within tolerance). Uses config/PhysiCell_settings_verify.xml.
+PYTHON ?= python3
+verify: project_opt project_orig
+	@echo ""
+	@echo "=== VERIFY: original vs optimized BioFVM (correctness) ==="
+	rm -rf ./output ./output_orig ./output_opt
+	mkdir -p ./output
+	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-4} ./project_orig config/PhysiCell_settings_verify.xml >/tmp/verify_orig.log 2>&1 || (cat /tmp/verify_orig.log; exit 1)
+	cp -r ./output ./output_orig
+	rm -rf ./output && mkdir -p ./output
+	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-4} ./project_opt  config/PhysiCell_settings_verify.xml >/tmp/verify_opt.log  2>&1 || (cat /tmp/verify_opt.log; exit 1)
+	cp -r ./output ./output_opt
+	$(PYTHON) BioFVM/tests/diff_microenvironment_mat.py ./output_orig ./output_opt --tol 1e-9
 
 name:
 	@echo ""

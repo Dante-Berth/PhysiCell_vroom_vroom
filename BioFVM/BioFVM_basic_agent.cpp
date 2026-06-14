@@ -327,6 +327,13 @@ void Basic_Agent::simulate_secretion_and_uptake( Microenvironment* pS, double dt
 	// lets the diffusion solver run without a per-step AoS<->SoA transpose: secretion
 	// only touches occupied voxels (~cell count), far fewer than a full-field unpack.
 	// AoS is synced lazily only when a non-secretion reader (sensing, I/O) needs it.
+	//
+	// IMPORTANT: a cell that SENSED the field earlier this step (nearest_density_vector /
+	// nearest_gradient) went through the AoS accessor, which sets aos_dirty. If AoS holds
+	// writes not yet in SoA, reading soa_p here would operate on stale data and silently
+	// diverge from the reference (field-wide, on slow/low-diffusion substrates). Flush any
+	// pending AoS writes into SoA before touching soa_p.
+	pS->sync_soa_before_soa_write();
 	{
 		const unsigned int ns  = pS->number_of_densities();
 		const unsigned int nv  = pS->number_of_voxels();

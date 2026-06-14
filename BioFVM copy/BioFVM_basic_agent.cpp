@@ -321,51 +321,30 @@ void Basic_Agent::simulate_secretion_and_uptake( Microenvironment* pS, double dt
 		volume_is_changed = false;
 	}
 	
-	// original 3-step secretion/uptake (baseline: no fused loop)
 	if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true )
 	{
-		total_extracellular_substrate_change.assign( total_extracellular_substrate_change.size(), 1.0 );
-		total_extracellular_substrate_change -= cell_source_sink_solver_temp2;
-		total_extracellular_substrate_change *= (*pS)(current_voxel_index);
-		total_extracellular_substrate_change += cell_source_sink_solver_temp1;
-		total_extracellular_substrate_change /= cell_source_sink_solver_temp2;
-		total_extracellular_substrate_change *= pS->voxels(current_voxel_index).volume;
-		*internalized_substrates -= total_extracellular_substrate_change;
+		total_extracellular_substrate_change.assign( total_extracellular_substrate_change.size() , 1.0 ); // 1
+
+		total_extracellular_substrate_change -= cell_source_sink_solver_temp2; // 1-c2
+		total_extracellular_substrate_change *= (*pS)(current_voxel_index); // (1-c2)*rho 
+		total_extracellular_substrate_change += cell_source_sink_solver_temp1; // (1-c2)*rho+c1 
+		total_extracellular_substrate_change /= cell_source_sink_solver_temp2; // ((1-c2)*rho+c1)/c2
+		total_extracellular_substrate_change *= pS->voxels(current_voxel_index).volume; // W*((1-c2)*rho+c1)/c2 
+		
+		*internalized_substrates -= total_extracellular_substrate_change; // opposite of net extracellular change 	
 	}
-
-	(*pS)(current_voxel_index) += cell_source_sink_solver_temp1;
-	(*pS)(current_voxel_index) /= cell_source_sink_solver_temp2;
-
-	(*pS)(current_voxel_index) += cell_source_sink_solver_temp_export2;
-	if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true )
+	
+	(*pS)(current_voxel_index) += cell_source_sink_solver_temp1; 
+	(*pS)(current_voxel_index) /= cell_source_sink_solver_temp2; 
+	
+	// now do net export 
+	(*pS)(current_voxel_index) += cell_source_sink_solver_temp_export2; 
+	if( default_microenvironment_options.track_internalized_substrates_in_each_agent == true ) 
 	{
-		*internalized_substrates -= cell_source_sink_solver_temp_export1;
+		*internalized_substrates -= cell_source_sink_solver_temp_export1; 
 	}
 
-	return;
-}
-
-// Present so the shared (current) BioFVM_microenvironment.o links in the original-
-// solver (baseline) build too. Identical to the accelerated version; never reached
-// by the baseline solver, which does not use the GPU path.
-bool Basic_Agent::pack_secretion_row( double dt,
-	int& voxel_out, double* temp1_out, double* temp2_out, double* export2_out )
-{
-	if( !is_active ) { voxel_out = -1; return false; }
-	if( volume_is_changed )
-	{
-		set_internal_uptake_constants( dt );
-		volume_is_changed = false;
-	}
-	voxel_out = current_voxel_index;
-	const unsigned int ns = (unsigned int)cell_source_sink_solver_temp1.size();
-	for( unsigned int s = 0; s < ns; s++ )
-	{
-		temp1_out[s]   = cell_source_sink_solver_temp1[s];
-		temp2_out[s]   = cell_source_sink_solver_temp2[s];
-		export2_out[s] = cell_source_sink_solver_temp_export2[s];
-	}
-	return true;
+	return; 
 }
 
 };

@@ -30,3 +30,21 @@ project_*
 BioFVM/tests/test_diffusion_cuda
 BioFVM/tests/test_diffusion_cuda_integration
 BioFVM/tests/bench_diffusion_cuda
+
+# ── Research / experiment outputs (large; must never enter git history) ──
+# These directories hold ~15 GB of RL/W&B data unrelated to the BioFVM C++ work.
+data/
+wandb/
+wandb_csv_exports/
+modules/async_sac_*/
+# Loose research artifacts at repo root (NOT config/*.csv, which are real sim inputs)
+/*.csv
+/*.png
+/*.pdf
+# Python experiment/plotting/W&B helper scripts at repo root (not the C++ project)
+/*.py
+.venv/
+# All output folders (sim results, verify/benchmark runs: output/, output_hyb/,
+# output_opt/, output_orig/, ...) — never part of the C++ work.
+output/
+output*/
