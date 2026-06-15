@@ -262,7 +262,7 @@ void delete_cell( Cell* );
 void save_all_cells_to_matlab( std::string filename ); 
 
 //function to check if a neighbor voxel contains any cell that can interact with me
-bool is_neighbor_voxel(Cell* pCell, std::vector<double> myVoxelCenter, std::vector<double> otherVoxelCenter, int otherVoxelIndex);  
+bool is_neighbor_voxel(Cell* pCell, const std::vector<double>& myVoxelCenter, const std::vector<double>& otherVoxelCenter, int otherVoxelIndex);
 
 
 extern std::unordered_map<std::string,Cell_Definition*> cell_definitions_by_name; 

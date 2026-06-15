@@ -1345,7 +1345,7 @@ void delete_cell( Cell* pDelete )
 	return; 
 }
 
-bool is_neighbor_voxel(Cell* pCell, std::vector<double> my_voxel_center, std::vector<double> other_voxel_center, int other_voxel_index)
+bool is_neighbor_voxel(Cell* pCell, const std::vector<double>& my_voxel_center, const std::vector<double>& other_voxel_center, int other_voxel_index)
 {
 	double max_interactive_distance = pCell->phenotype.mechanics.relative_maximum_adhesion_distance * pCell->phenotype.geometry.radius 
 		+ pCell->get_container()->max_cell_interactive_distance_in_voxel[other_voxel_index];
