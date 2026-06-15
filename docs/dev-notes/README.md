@@ -9,6 +9,7 @@ GPU hardware). Start there when resuming GPU work.
 
 | File | What it covers |
 |------|----------------|
+| [SETUP.md](SETUP.md) | **Start here on a fresh machine** — prerequisites, clone, build, test/benchmark, GPU build, physigym. Written for a human or LLM agent. |
 | [biofvm-optimizations.md](biofvm-optimizations.md) | CPU optimizations: SoA layout, flattened Thomas coeffs, OpenMP, lazy AoS↔SoA transpose. Timings. |
 | [cuda-biofvm.md](cuda-biofvm.md) | CUDA/GPU port (Scope B, dual-backend): architecture, secretion kernel, field residency, status, next steps. |
 | [verify-discrepancy.md](verify-discrepancy.md) | **OPEN BUG**: optimized BioFVM diverges from the reference on low/zero-diffusion substrates in the full RL sim. |
