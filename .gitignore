@@ -31,6 +31,7 @@ BioFVM/tests/test_diffusion_cuda
 BioFVM/tests/test_diffusion_cuda_integration
 BioFVM/tests/bench_diffusion_cuda
 BioFVM/tests/bench_diffusion_cuda_gpu
+BioFVM/tests/test_gpu_autoselect
 bench3_ref
 bench3_cpu
 bench3_gpu

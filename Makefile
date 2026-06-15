@@ -207,6 +207,21 @@ bench3-gpu: $(BENCH_GPU_OBJS)
 bench3: bench3-ref bench3-cpu bench3-gpu
 	@echo "(see the three [backend] blocks above; same args, same problem)"
 
+# Size-based GPU auto-selection test. CPU build: must NEVER pick GPU. GPU build:
+# picks GPU only at/above the voxel threshold.
+test-gpu-autoselect: $(INTEG_BIOFVM_OBJS)
+	$(COMPILE_COMMAND) -I. BioFVM/tests/test_gpu_autoselect.cpp \
+		$(INTEG_BIOFVM_OBJS) -o BioFVM/tests/test_gpu_autoselect
+	./BioFVM/tests/test_gpu_autoselect
+
+test-gpu-autoselect-gpu: $(BENCH_GPU_OBJS)
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -x cu -c \
+		BioFVM/BioFVM_diffusion_cuda.cu -o BioFVM/BioFVM_diffusion_cuda_gpu.o
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -Xcompiler -fopenmp -I. \
+		BioFVM/tests/test_gpu_autoselect.cpp $(BENCH_GPU_OBJS) \
+		BioFVM/BioFVM_diffusion_cuda_gpu.o -o BioFVM/tests/test_gpu_autoselect
+	./BioFVM/tests/test_gpu_autoselect
+
 # ── benchmark targets: compare optimized BioFVM/ vs original "BioFVM copy"/ ──
 
 BIOFVM_ORIG_DIR := BioFVM copy

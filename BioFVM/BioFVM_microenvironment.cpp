@@ -51,6 +51,7 @@
 #include "BioFVM_diffusion_cuda.h"
 #include "BioFVM_vector.h"
 #include <cmath>
+#include <cstdlib>
 #ifdef BIOFVM_PROFILE_PACK
 #include <chrono>
 #include <cstdio>
@@ -1379,11 +1380,34 @@ void initialize_microenvironment( void )
 		default_microenvironment_options.Z_range[0] = -default_microenvironment_options.dz/2.0; 
 		default_microenvironment_options.Z_range[1] = default_microenvironment_options.dz/2.0;
 	}
-	microenvironment.resize_space( default_microenvironment_options.X_range[0], default_microenvironment_options.X_range[1] , 
-		default_microenvironment_options.Y_range[0], default_microenvironment_options.Y_range[1], 
-		default_microenvironment_options.Z_range[0], default_microenvironment_options.Z_range[1], 
+	microenvironment.resize_space( default_microenvironment_options.X_range[0], default_microenvironment_options.X_range[1] ,
+		default_microenvironment_options.Y_range[0], default_microenvironment_options.Y_range[1],
+		default_microenvironment_options.Z_range[0], default_microenvironment_options.Z_range[1],
 		default_microenvironment_options.dx,default_microenvironment_options.dy,default_microenvironment_options.dz );
-		
+
+	// Size-based GPU solver selection (3D only). The GPU-resident LOD solver only wins
+	// on large grids; on small grids the CPU SoA solver is faster (kernel-launch +
+	// transpose overhead dominates). Benchmarks (RTX 4090): GPU loses to CPU-opt at
+	// 256K voxels, wins ~1.7x at 4M. So we switch to the GPU solver only when (a) this
+	// build actually has a CUDA backend and (b) the grid is at/above a voxel threshold.
+	// In a CPU-only build gpu_backend_is_cuda() is false, so this never triggers.
+	// Threshold default 1,000,000 voxels; override with BIOFVM_GPU_MIN_VOXELS.
+	if( default_microenvironment_options.simulate_2D == false && gpu_backend_is_cuda() )
+	{
+		unsigned long long min_voxels = 1000000ULL;
+		if( const char* env = std::getenv( "BIOFVM_GPU_MIN_VOXELS" ) )
+		{
+			unsigned long long v = std::strtoull( env, nullptr, 10 );
+			if( v > 0 ) min_voxels = v;
+		}
+		if( (unsigned long long)microenvironment.number_of_voxels() >= min_voxels )
+		{
+			microenvironment.diffusion_decay_solver = diffusion_decay_solver__constant_coefficients_LOD_3D_GPU;
+			std::cout << "BioFVM: grid has " << microenvironment.number_of_voxels()
+				<< " voxels (>= " << min_voxels << "); using GPU-resident LOD 3D solver." << std::endl;
+		}
+	}
+
 	// set units
 	microenvironment.spatial_units = default_microenvironment_options.spatial_units;
 	microenvironment.time_units = default_microenvironment_options.time_units;
