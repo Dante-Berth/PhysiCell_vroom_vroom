@@ -5,9 +5,10 @@ work on BioFVM. It is written so that a future session (on real GPU hardware, a
 different machine, or a fresh checkout) can pick the work up immediately. It lives
 in the repo on purpose: it travels with the code and survives machine/path changes.
 
-Last validated on a **CPU-only machine** (no NVIDIA GPU) using the dual-backend
-fallback. Everything below compiles, runs, and passes there; the CUDA kernels are
-written but have **not yet run on a device**.
+Validated on a real **NVIDIA RTX 4090 + CUDA 13.1** (2026-06-15): the CUDA kernels
+compile with nvcc, run on the device, and pass correctness (1.78e-15 vs reference).
+The dual-backend CPU fallback also still compiles/runs/passes bit-identically on a
+CPU-only machine. See §8 for the real-GPU speedup numbers.
 
 ---
 
@@ -107,11 +108,35 @@ size), so cell↔field coupling never moves the whole grid.
 - `make bench-cuda` — transfer counters confirm **1 upload + 1 download over 200
   steps** (≈0 per step): residency works.
 
-## 8. TODO when on real GPU hardware (priority order)
+## 8. Real-GPU status (validated 2026-06-15, RTX 4090 + CUDA 13.1)
 
-1. **Build with nvcc and run `make test-cuda-gpu`** — first time the kernels touch a
-   device. Fix any launch/config issues. Then `make bench-cuda` (built via nvcc) for
-   the *real* speedup number (CPU-only build can't measure device acceleration).
+The kernels now run on real hardware. First real-GPU run surfaced and fixed two
+latent bugs (see commit 4a9d6dc7): include-scope (`<cstdio>`/`<cuda_runtime.h>`
+were inside `namespace BioFVM`) and a transpose-correctness bug in the LOD
+sweep permutation (old two-mode `k_permute` couldn't invert the z rotation).
+
+- `make test-cuda-gpu` — PASS at 1.78e-15 vs reference.
+- `make bench-cuda-gpu` — NEW target: rebuilds `BioFVM_diffusion_cuda.o` with
+  nvcc + `BioFVM_USE_CUDA`, reuses the ABI-compatible g++ objects, links the
+  bench with nvcc. Residency holds (1 upload + 1 download total, ≈0/step).
+
+Real GPU vs **32-thread** CPU (the hybrid-vs-full-CPU comparison):
+
+| grid | voxels | speedup |
+|------|--------|---------|
+| 80×80×40   | 256K | 1.12x |
+| 160×160×80 | 2.05M | 1.63x |
+| 200×200×100 | 4M | 2.05x |
+
+Speedup grows with **grid size** but *shrinks* with **cell count** (2M grid):
+1.73x @5k cells → 1.33x @500k. The secretion kernel (`gpu_apply_secretion`)
+is the next bottleneck — it grows GPU per-step time faster than the CPU
+OpenMP secretion loop in the cell-heavy regime.
+
+## 9. TODO (priority order)
+
+1. **Optimize `gpu_apply_secretion`** — it's the limiter in the cell-heavy
+   regime (per-step re-pack + small upload + same-voxel scatter serialization).
 2. **Wire into `auto_choose_diffusion_decay_solver`** so 3D sims pick the GPU solver
    automatically (guard on `gpu_backend_is_cuda()` / a runtime flag).
 3. **Dirichlet-on-device kernel** — fill in `k_apply_dirichlet`, upload the boolean
@@ -122,6 +147,6 @@ size), so cell↔field coupling never moves the whole grid.
 6. **Profile transpose vs. cuSPARSE `gtsv` batched tridiagonal** for the Thomas
    sweeps; tune block sizes.
 
-## 9. Prior art
+## 10. Prior art
 
 BioFVM-X (published GPU/MPI BioFVM) — don't reinvent; compare approach/perf.
