@@ -329,6 +329,46 @@ verify: project_opt project_orig
 	cp -r ./output ./output_opt
 	$(PYTHON) BioFVM/tests/diff_microenvironment_mat.py ./output_orig ./output_opt --tol 1e-9
 
+# ── PhysiCell mechanics A/B (optimized add_potentials vs frozen baseline) ───
+# Both runs use the SAME binary `project`; the env var PHYSICELL_MECH_BASELINE=1
+# selects the frozen original force kernel (Cell::add_potentials_baseline). The
+# optimized kernel only adds a squared-distance early-out, so the cell trajectories
+# must be bit-identical. Pinned to 1 thread (mechanics neighbor order is otherwise
+# nondeterministic, like BioFVM secretion). Uses the short verify config.
+
+# CORRECTNESS: diff BOTH cell state and microenvironment, baseline vs optimized.
+verify-mech: classic
+	@echo ""
+	@echo "=== VERIFY-MECH: baseline vs optimized mechanics (correctness, 1 thread) ==="
+	rm -rf ./output ./output_mech_base ./output_mech_opt
+	mkdir -p ./output
+	OMP_NUM_THREADS=1 PHYSICELL_MECH_BASELINE=1 ./project config/PhysiCell_settings_verify.xml >/tmp/verify_mech_base.log 2>&1 || (cat /tmp/verify_mech_base.log; exit 1)
+	cp -r ./output ./output_mech_base
+	rm -rf ./output && mkdir -p ./output
+	OMP_NUM_THREADS=1 ./project config/PhysiCell_settings_verify.xml >/tmp/verify_mech_opt.log 2>&1 || (cat /tmp/verify_mech_opt.log; exit 1)
+	cp -r ./output ./output_mech_opt
+	@echo "--- cell state diff ---"
+	$(PYTHON) BioFVM/tests/diff_cells_mat.py ./output_mech_base ./output_mech_opt --tol 1e-9
+	@echo "--- microenvironment diff ---"
+	$(PYTHON) BioFVM/tests/diff_microenvironment_mat.py ./output_mech_base ./output_mech_opt --tol 1e-9
+
+# BENCHMARK: wall time baseline vs optimized mechanics on the benchmark config.
+# Multi-threaded is fine here (timing only, not correctness).
+bench-mech: classic
+	@echo ""
+	@echo "=== BENCH-MECH: baseline mechanics ==="
+	rm -rf ./output && mkdir -p ./output/episode00000000
+	PHYSICELL_MECH_BASELINE=1 ./project config/PhysiCell_settings_benchmark.xml 2>&1 | tee /tmp/bench_mech_base.txt | grep -E "Total simulation|wall time"
+	@echo ""
+	@echo "=== BENCH-MECH: optimized mechanics ==="
+	rm -rf ./output && mkdir -p ./output/episode00000000
+	./project config/PhysiCell_settings_benchmark.xml 2>&1 | tee /tmp/bench_mech_opt.txt | grep -E "Total simulation|wall time"
+	@echo ""
+	@echo "=== SUMMARY ==="
+	@echo "baseline :" $$(grep "wall time" /tmp/bench_mech_base.txt | tail -1)
+	@echo "optimized:" $$(grep "wall time" /tmp/bench_mech_opt.txt | tail -1)
+	@echo ""
+
 name:
 	@echo ""
 	@echo "Executable name is" $(PROGRAM_NAME)
