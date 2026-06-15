@@ -199,15 +199,24 @@ void gpu_apply_secretion( gpu_field* g, const gpu_secretion_batch& b )
     const unsigned int n = b.n_cells, ns = g->p.ns;
     if( n == 0 ) return;
     ensure_sec_capacity( g, n, ns );
-    CUDA_CHECK( cudaMemcpy( g->d_sec_voxel, b.voxel.data(), (size_t)n*sizeof(int), cudaMemcpyHostToDevice ) );
-    CUDA_CHECK( cudaMemcpy( g->d_sec_t1, b.temp1.data(), (size_t)n*ns*sizeof(double), cudaMemcpyHostToDevice ) );
-    CUDA_CHECK( cudaMemcpy( g->d_sec_t2, b.temp2.data(), (size_t)n*ns*sizeof(double), cudaMemcpyHostToDevice ) );
-    CUDA_CHECK( cudaMemcpy( g->d_sec_ex, b.temp_export2.data(), (size_t)n*ns*sizeof(double), cudaMemcpyHostToDevice ) );
+    // Async H2D on the default stream: the kernel below and any later download all
+    // run on stream 0, so they serialize after these copies without a host-side wait.
+    const size_t dn = (size_t)n*ns*sizeof(double);
+    CUDA_CHECK( cudaMemcpyAsync( g->d_sec_voxel, b.voxel.data(), (size_t)n*sizeof(int), cudaMemcpyHostToDevice ) );
+    CUDA_CHECK( cudaMemcpyAsync( g->d_sec_t1, b.temp1.data(), dn, cudaMemcpyHostToDevice ) );
+    CUDA_CHECK( cudaMemcpyAsync( g->d_sec_t2, b.temp2.data(), dn, cudaMemcpyHostToDevice ) );
+    CUDA_CHECK( cudaMemcpyAsync( g->d_sec_ex, b.temp_export2.data(), dn, cudaMemcpyHostToDevice ) );
     const unsigned int B = 128;
     k_secretion<<< (n+B-1)/B, B >>>( g->d_soa, g->p.nv, ns,
         g->d_sec_voxel, g->d_sec_t1, g->d_sec_t2, g->d_sec_ex, n );
     CUDA_CHECK( cudaGetLastError() );
+#ifdef BIOFVM_SEC_SYNC
     CUDA_CHECK( cudaDeviceSynchronize() );
+#endif
+    // No cudaDeviceSynchronize here (unless BIOFVM_SEC_SYNC, for A/B): secretion is the
+    // last device op of the resident step and its result is consumed only by the next
+    // same-stream solve or by a syncing gpu_download before a host read. Returning lets
+    // the host pack the next batch while the kernel runs.
 }
 
 // --- kernels ----------------------------------------------------------------
