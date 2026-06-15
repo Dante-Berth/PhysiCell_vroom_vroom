@@ -30,6 +30,7 @@ project_*
 BioFVM/tests/test_diffusion_cuda
 BioFVM/tests/test_diffusion_cuda_integration
 BioFVM/tests/bench_diffusion_cuda
+BioFVM/tests/bench_diffusion_cuda_gpu
 
 # ── Research / experiment outputs (large; must never enter git history) ──
 # These directories hold ~15 GB of RL/W&B data unrelated to the BioFVM C++ work.

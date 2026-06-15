@@ -25,6 +25,14 @@
 #include <vector>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
+
+// CUDA runtime must be included at global scope (not inside namespace BioFVM),
+// otherwise <cstdio>/<cuda_runtime.h> names land under BioFVM::std::* and the
+// CUDA_CHECK macro's std::fprintf/std::abort fail to resolve.
+#if defined(__CUDACC__) && defined(BioFVM_USE_CUDA)
+#include <cuda_runtime.h>
+#endif
 
 namespace BioFVM {
 
@@ -42,9 +50,6 @@ void gpu_reset_transfer_counters()
 //  CUDA BACKEND
 // =============================================================================
 #if defined(__CUDACC__) && defined(BioFVM_USE_CUDA)
-
-#include <cuda_runtime.h>
-#include <cstdio>
 
 #define CUDA_CHECK(call)                                                       \
     do {                                                                       \
@@ -246,25 +251,39 @@ __global__ void k_thomas_axis( double* soa, unsigned int nv, unsigned int ns,
         col[t] -= c[ t*ns + s ] * col[(size_t)t+1];
 }
 
-// Transpose so that the next sweep axis becomes contiguous. We rotate index
-// roles: input voxel (i,j,k) at v=i+nx*j+nx*ny*k -> output position chosen so
-// the target axis varies fastest. Implemented as a generic gather over all
-// substrates. One thread per output voxel.
+// General axis-permuting transpose. The source buffer is stored so that the
+// three logical axes (x,y,z) appear in slot order (slot0 = contiguous/fastest,
+// then slot1, then slot2). `e0,e1,e2` are the EXTENTS of slots 0,1,2 and
+// `ax0,ax1,ax2` say which logical axis (0=x,1=y,2=z) each slot is. The
+// destination is always written in a layout chosen by the *destination* slot
+// order given via the same (ax/e) describing dst — but to keep call sites
+// unambiguous we always write CANONICAL output here: dst is laid out with
+// dst-slot0..2 extents (de0,de1,de2) for logical axes (dax0,dax1,dax2).
+// One thread per source voxel; gathers all substrates.
 __global__ void k_permute( const double* src, double* dst,
                            unsigned int nv, unsigned int ns,
-                           unsigned int a, unsigned int b, unsigned int c,
-                           int mode )
+                           unsigned int e0, unsigned int e1, unsigned int e2,
+                           int ax0, int ax1, int ax2,
+                           unsigned int de0, unsigned int de1, unsigned int de2,
+                           int dax0, int dax1, int dax2 )
 {
-    // src is laid out with axis-order producing extents along contiguous dim = a,
-    // then b, then c. dst will have contiguous dim = b (mode 0) or c (mode 1).
     unsigned int v = blockIdx.x*blockDim.x + threadIdx.x;
     if( v >= nv ) return;
-    unsigned int ia = v % a;
-    unsigned int ib = (v / a) % b;
-    unsigned int ic = v / (a*b);
-    unsigned int out;
-    if( mode == 0 ) out = ib + b*( ia + a*ic );      // make axis b contiguous
-    else            out = ic + c*( ia + a*ib );      // make axis c contiguous
+    // decode source slot indices
+    unsigned int i0 = v % e0;
+    unsigned int i1 = (v / e0) % e1;
+    unsigned int i2 = v / ((size_t)e0*e1);
+    // map to logical (x,y,z)
+    unsigned int lx=0, ly=0, lz=0;
+    unsigned int si[3] = { i0, i1, i2 };
+    int          sa[3] = { ax0, ax1, ax2 };
+    for( int k=0;k<3;++k ){ if(sa[k]==0) lx=si[k]; else if(sa[k]==1) ly=si[k]; else lz=si[k]; }
+    // encode into destination slot order
+    unsigned int dl[3]; // logical index per dst slot
+    int          da[3] = { dax0, dax1, dax2 };
+    for( int k=0;k<3;++k ){ dl[k] = (da[k]==0)?lx : (da[k]==1)?ly : lz; }
+    unsigned int out = dl[0] + de0*( dl[1] + (size_t)de1*dl[2] );
+    (void)de2;
     for( unsigned int s=0; s<ns; ++s )
         dst[ (size_t)s*nv + out ] = src[ (size_t)s*nv + v ];
 }
@@ -290,26 +309,32 @@ void gpu_solve_3D_LOD( gpu_field* g )
 
     if( g->nd > 0 )
     {
-        // --- x-sweep: x already contiguous (stride 1). lines = ny*nz ---
+        // Layout notation: slots are (contiguous, mid, slow); each tagged with its
+        // logical axis 0=x,1=y,2=z. Natural L0 = slots(x,y,z) extents(nx,ny,nz).
+
+        // --- x-sweep in L0: x contiguous. lines = ny*nz, length nx ---
         k_thomas_axis<<< grid_for(ny*nz*g->nd, B), B >>>(
             g->d_soa, nv, ns, nx, ny*nz, g->d_denom_x, g->d_cx, g->d_c1, g->d_diff_subs, g->nd );
 
-        // transpose (x,y,z)->(y,x,z): make y contiguous. extents a=nx,b=ny,c=nz
-        k_permute<<< grid_for(nv,B), B >>>( g->d_soa, g->d_tmp, nv, ns, nx, ny, nz, 0 );
-        // --- y-sweep on d_tmp: y contiguous, lines = nx*nz ---
+        // L0 (x,y,z) -> Ly (y,x,z): make y contiguous
+        k_permute<<< grid_for(nv,B), B >>>( g->d_soa, g->d_tmp, nv, ns,
+            nx,ny,nz, 0,1,2,   ny,nx,nz, 1,0,2 );
+        // --- y-sweep on d_tmp: y contiguous. lines = nx*nz, length ny ---
         k_thomas_axis<<< grid_for(nx*nz*g->nd, B), B >>>(
             g->d_tmp, nv, ns, ny, nx*nz, g->d_denom_y, g->d_cy, g->d_c1, g->d_diff_subs, g->nd );
+        // Ly (y,x,z) -> L0 (x,y,z)
+        k_permute<<< grid_for(nv,B), B >>>( g->d_tmp, g->d_soa, nv, ns,
+            ny,nx,nz, 1,0,2,   nx,ny,nz, 0,1,2 );
 
-        // transpose back (y,x,z)->(x,y,z): a=ny,b=nx,c=nz, make x contiguous
-        k_permute<<< grid_for(nv,B), B >>>( g->d_tmp, g->d_soa, nv, ns, ny, nx, nz, 0 );
-
-        // transpose (x,y,z)->(z,y,x)-ish so z is contiguous: a=nx,b=ny,c=nz mode1
-        k_permute<<< grid_for(nv,B), B >>>( g->d_soa, g->d_tmp, nv, ns, nx, ny, nz, 1 );
-        // --- z-sweep on d_tmp: z contiguous, lines = nx*ny ---
+        // L0 (x,y,z) -> Lz (z,x,y): make z contiguous
+        k_permute<<< grid_for(nv,B), B >>>( g->d_soa, g->d_tmp, nv, ns,
+            nx,ny,nz, 0,1,2,   nz,nx,ny, 2,0,1 );
+        // --- z-sweep on d_tmp: z contiguous. lines = nx*ny, length nz ---
         k_thomas_axis<<< grid_for(nx*ny*g->nd, B), B >>>(
             g->d_tmp, nv, ns, nz, nx*ny, g->d_denom_z, g->d_cz, g->d_c1, g->d_diff_subs, g->nd );
-        // transpose back to (x,y,z): a=nx*?, invert mode1
-        k_permute<<< grid_for(nv,B), B >>>( g->d_tmp, g->d_soa, nv, ns, nx, ny, nz, 1 );
+        // Lz (z,x,y) -> L0 (x,y,z)
+        k_permute<<< grid_for(nv,B), B >>>( g->d_tmp, g->d_soa, nv, ns,
+            nz,nx,ny, 2,0,1,   nx,ny,nz, 0,1,2 );
     }
     CUDA_CHECK( cudaGetLastError() );
     CUDA_CHECK( cudaDeviceSynchronize() );

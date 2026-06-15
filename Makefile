@@ -151,6 +151,25 @@ bench-cuda: $(INTEG_BIOFVM_OBJS)
 		$(INTEG_BIOFVM_OBJS) -o BioFVM/tests/bench_diffusion_cuda
 	./BioFVM/tests/bench_diffusion_cuda
 
+# Real-GPU benchmark: same bench as bench-cuda, but the diffusion solver object is
+# rebuilt with nvcc + BioFVM_USE_CUDA so the CUDA kernels actually run on the device.
+# Only BioFVM_diffusion_cuda.cu contains CUDA-guarded code; the other BioFVM objects
+# are ABI-compatible (nvcc uses the host g++/libstdc++), so we reuse the g++ ones and
+# relink with nvcc to pull in the CUDA runtime. The .cu object is rebuilt every time to
+# avoid linking a stale CPU-fallback build of it (no header deps in this Makefile).
+BENCH_GPU_OBJS := BioFVM_vector.o BioFVM_mesh.o BioFVM_microenvironment.o \
+	BioFVM_solvers.o BioFVM_matlab.o BioFVM_utilities.o BioFVM_basic_agent.o \
+	BioFVM_MultiCellDS.o BioFVM_agent_container.o pugixml.o
+
+bench-cuda-gpu: $(BENCH_GPU_OBJS)
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -x cu -c \
+		BioFVM/BioFVM_diffusion_cuda.cu -o BioFVM/BioFVM_diffusion_cuda_gpu.o
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -Xcompiler -fopenmp -I. \
+		BioFVM/tests/bench_diffusion_cuda.cpp $(BENCH_GPU_OBJS) \
+		BioFVM/BioFVM_diffusion_cuda_gpu.o \
+		-o BioFVM/tests/bench_diffusion_cuda_gpu
+	./BioFVM/tests/bench_diffusion_cuda_gpu
+
 # ── benchmark targets: compare optimized BioFVM/ vs original "BioFVM copy"/ ──
 
 BIOFVM_ORIG_DIR := BioFVM copy
