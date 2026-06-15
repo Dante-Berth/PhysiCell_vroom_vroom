@@ -34,19 +34,54 @@ make test-cuda              # unit: kernel vs independent reference Thomas solve
 make test-cuda-integration  # engine: diffusion / diffusion+secretion / interleaved reads
 make bench-cuda             # wall-time + transfer counts, CPU two-call vs GPU-resident
 make test-cuda-gpu          # (needs nvcc) build & run kernels on a real device
+make bench-cuda-gpu         # (needs nvcc) real-GPU wall time vs CPU
+make test-gpu-autoselect[-gpu]  # size-based GPU solver selection (CPU/GPU build)
 ```
 
 All Axis-2 correctness tests assert **bit-for-bit** (0.000e+00) agreement against
 the CPU solver, except where BioFVM's own CPU secretion is nondeterministic (see
 the multi-cell-per-voxel note in `BioFVM/CUDA_GPU_NOTES.md`).
 
+The GPU only wins on large 3D grids (it loses to the CPU-opt solver on small ones,
+where kernel-launch/transpose overhead dominates). `initialize_microenvironment`
+therefore auto-selects the GPU solver only when the build has a CUDA backend AND
+the grid is >= `BIOFVM_GPU_MIN_VOXELS` (default 1,000,000; env-overridable). A
+normal CPU build never selects it. Real-GPU speedup (RTX 4090, vs 32-thread CPU):
+~1.1x @256K voxels, ~1.6x @2M, ~2.0x @4M.
+
+### Three-way micro-benchmark: reference vs CPU-opt vs GPU
+`make bench3` (or `bench3-ref` / `bench3-cpu` / `bench3-gpu`) times JUST the
+diffusion+secretion loop on an identical problem across all three solvers, so the
+numbers are directly comparable. Pass `ARGS="NX NY NZ AGENTS STEPS"`. Source:
+`benchmark_biofvm.cpp`. Sample (32-thread CPU, ms/step): 4M voxels = ref 84.1 /
+cpu 36.2 (2.3x) / gpu 21.2 (4.0x vs ref).
+
+## Axis 3 — PhysiCell mechanics (cell-cell forces)
+
+PhysiCell's per-step cost is dominated by mechanics (~86% of `update_all_cells`;
+`update_velocity` alone ~52%). Optimizations here must leave cell trajectories
+bit-identical.
+
+```
+make verify-mech   # baseline vs optimized mechanics, 1 thread; diffs BOTH cell
+                   #   state (*_cells.mat) AND microenvironment -> must be 0.000e+00
+make bench-mech    # wall-time A/B (baseline vs optimized) on the benchmark config
+```
+
+Both use the SAME `project` binary; `PHYSICELL_MECH_BASELINE=1` selects the frozen
+original force kernel (`Cell::add_potentials_baseline`). The optimized path is
+verified bit-identical. To find the next hotspot, rebuild
+`PhysiCell_cell_container.o` with `-DPHYSICELL_PROFILE_STEP` for a per-phase
+wall-time breakdown of `update_all_cells` (zero cost otherwise).
+
 ## In-process micro-benchmark: `benchmark_biofvm.cpp`
 
-A standalone harness that builds a microenvironment + agents and times
-`simulate_diffusion_decay` / secretion directly, without the full PhysiCell loop.
-It includes BioFVM via a compile-time include path, so the *same source* can be
-compiled against either `BioFVM/` or `BioFVM copy/` to compare solvers in isolation.
-This is the model for adding new micro-benchmarks of a specific optimization.
+A standalone harness that builds a microenvironment + agents and times the
+diffusion+secretion loop directly, without the full PhysiCell loop. The *same
+source* is compiled against `BioFVM copy/` (reference), `BioFVM/` (CPU-opt), and
+`BioFVM/` + nvcc (GPU) — this is exactly what the `make bench3*` targets do
+(see "Three-way micro-benchmark" above). It is also the model for adding new
+micro-benchmarks of a specific optimization.
 
 ## How to add a new acceleration + its test
 
@@ -59,6 +94,13 @@ This is the model for adding new micro-benchmarks of a specific optimization.
    `make bench-cuda`).
 4. **Pin OpenMP threads** when benchmarking (`OMP_NUM_THREADS=N`) — default
    oversubscription produces wildly noisy timings.
+
+For a **PhysiCell core** (e.g. mechanics) optimization, the same discipline with
+an in-binary A/B: keep the original as a `*_baseline` function selected by an env
+var, gate correctness on `make verify-mech` (cells + microenvironment, 1 thread,
+must be 0.000e+00), then time with `make bench-mech`. Profile first with
+`-DPHYSICELL_PROFILE_STEP` so you optimize the phase that actually dominates —
+not every plausible-looking change moves the profiler (see the dev-notes).
 
 ## Repo hygiene
 
