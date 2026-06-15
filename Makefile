@@ -170,6 +170,43 @@ bench-cuda-gpu: $(BENCH_GPU_OBJS)
 		-o BioFVM/tests/bench_diffusion_cuda_gpu
 	./BioFVM/tests/bench_diffusion_cuda_gpu
 
+# ── 3-way diffusion-loop micro-benchmark ────────────────────────────────────
+# Times JUST the diffusion+secretion loop (no PhysiCell engine, no I/O) on an
+# identical problem across three solvers, so the numbers are directly comparable:
+#   bench3-ref  : pristine reference tree ("BioFVM copy"/)        [orig_*.o]
+#   bench3-cpu  : CPU-optimized tree (BioFVM/, SoA+OpenMP)        [BioFVM_*.o]
+#   bench3-gpu  : GPU-resident hybrid (BioFVM/ .cu built w/ nvcc) [+CUDA runtime]
+#   bench3      : runs all three back to back
+# Source: benchmark_biofvm.cpp (uses only the common BioFVM API). Args forwarded
+# via ARGS, e.g.  make bench3 ARGS="160 160 80 20000 100".
+ARGS ?=
+
+BENCH3_REF_OBJS := orig_BioFVM_vector.o orig_BioFVM_mesh.o orig_BioFVM_microenvironment.o \
+	orig_BioFVM_solvers.o orig_BioFVM_matlab.o orig_BioFVM_utilities.o \
+	orig_BioFVM_basic_agent.o orig_BioFVM_MultiCellDS.o orig_BioFVM_agent_container.o \
+	orig_pugixml.o
+
+bench3-ref: $(BENCH3_REF_OBJS)
+	$(COMPILE_COMMAND) -I'BioFVM copy' -DBENCH_LABEL='"reference (BioFVM copy)"' \
+		benchmark_biofvm.cpp $(BENCH3_REF_OBJS) -o bench3_ref
+	./bench3_ref $(ARGS)
+
+bench3-cpu: $(INTEG_BIOFVM_OBJS)
+	$(COMPILE_COMMAND) -IBioFVM -DBENCH_LABEL='"CPU-opt (BioFVM)"' \
+		benchmark_biofvm.cpp $(INTEG_BIOFVM_OBJS) -o bench3_cpu
+	./bench3_cpu $(ARGS)
+
+bench3-gpu: $(BENCH_GPU_OBJS)
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -x cu -c \
+		BioFVM/BioFVM_diffusion_cuda.cu -o BioFVM/BioFVM_diffusion_cuda_gpu.o
+	$(NVCC) $(NVCC_FLAGS) -D BioFVM_USE_CUDA -D BENCH_HAVE_GPU -Xcompiler -fopenmp -IBioFVM \
+		benchmark_biofvm.cpp $(BENCH_GPU_OBJS) BioFVM/BioFVM_diffusion_cuda_gpu.o \
+		-o bench3_gpu
+	./bench3_gpu $(ARGS)
+
+bench3: bench3-ref bench3-cpu bench3-gpu
+	@echo "(see the three [backend] blocks above; same args, same problem)"
+
 # ── benchmark targets: compare optimized BioFVM/ vs original "BioFVM copy"/ ──
 
 BIOFVM_ORIG_DIR := BioFVM copy
