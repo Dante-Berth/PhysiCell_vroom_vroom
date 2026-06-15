@@ -1,0 +1,38 @@
+#####
+# title: pyproject.toml
+#
+# language: hatch
+# date: 2024-spring
+# license: BSD-3-Clause
+# author: Alexandre Bertin, Elmar Bucher
+#
+# description:
+#   Building a hatchling based physigym python module.
+# https://hatch.pypa.io/latest/
+#####
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["physigym"]
+
+[project]
+name = "physigym"
+dynamic = ["version"]
+license = "BSD-3-Clause"
+
+dependencies = [
+    "gymnasium",
+    "ipython",
+    "lxml",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pyqt6",
+]
+
+[tool.hatch.version]
+path = "VERSION.txt"

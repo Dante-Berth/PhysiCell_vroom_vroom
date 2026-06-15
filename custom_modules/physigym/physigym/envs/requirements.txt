@@ -1,0 +1,7 @@
+gymnasium
+imageio[ffmpeg]
+numba
+numpy
+tensordict
+tyro
+wandb

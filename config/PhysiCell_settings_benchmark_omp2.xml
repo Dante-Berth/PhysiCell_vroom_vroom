@@ -23,7 +23,7 @@
     </domain>
 
     <overall>
-        <max_time units="min">10080.0</max_time>
+        <max_time units="min">1440.0</max_time>
         <time_units>min</time_units>
         <space_units>micron</space_units>
         <dt_diffusion units="min">0.01</dt_diffusion>
@@ -32,7 +32,7 @@
     </overall>
 
     <parallel>
-        <omp_num_threads>1</omp_num_threads>
+        <omp_num_threads>2</omp_num_threads>
     </parallel>
 
     <save>
