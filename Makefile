@@ -245,12 +245,16 @@ PYTHON ?= python3
 verify: project_opt project_orig
 	@echo ""
 	@echo "=== VERIFY: original vs optimized BioFVM (correctness) ==="
+	@echo "    (pinned to 1 thread: BioFVM's multi-cell-per-voxel secretion is"
+	@echo "     #pragma omp parallel and order-dependent, so >1 thread makes the"
+	@echo "     REFERENCE itself nondeterministic ~1e-3 run-to-run and the diff"
+	@echo "     reports false ~0.99 swaps. Correctness must be checked single-threaded.)"
 	rm -rf ./output ./output_orig ./output_opt
 	mkdir -p ./output
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-4} ./project_orig config/PhysiCell_settings_verify.xml >/tmp/verify_orig.log 2>&1 || (cat /tmp/verify_orig.log; exit 1)
+	OMP_NUM_THREADS=1 ./project_orig config/PhysiCell_settings_verify.xml >/tmp/verify_orig.log 2>&1 || (cat /tmp/verify_orig.log; exit 1)
 	cp -r ./output ./output_orig
 	rm -rf ./output && mkdir -p ./output
-	OMP_NUM_THREADS=$${OMP_NUM_THREADS:-4} ./project_opt  config/PhysiCell_settings_verify.xml >/tmp/verify_opt.log  2>&1 || (cat /tmp/verify_opt.log; exit 1)
+	OMP_NUM_THREADS=1 ./project_opt  config/PhysiCell_settings_verify.xml >/tmp/verify_opt.log  2>&1 || (cat /tmp/verify_opt.log; exit 1)
 	cp -r ./output ./output_opt
 	$(PYTHON) BioFVM/tests/diff_microenvironment_mat.py ./output_orig ./output_opt --tol 1e-9
 

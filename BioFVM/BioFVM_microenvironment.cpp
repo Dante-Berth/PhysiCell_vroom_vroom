@@ -1128,6 +1128,13 @@ void Microenvironment::compute_all_gradient_vectors( void )
 		gradient_constants_defined = true;
 	}
 
+	// Gradients read soa_p directly. If a cell SENSED the field this step, an AoS
+	// accessor set aos_dirty (AoS holds writes not yet flushed into SoA), leaving
+	// soa_p stale here. Flush AoS->SoA first so gradients differentiate the
+	// authoritative field — matching the reference, which reads the live AoS.
+	// (No-op in the common case where aos_dirty is false.)
+	sync_soa_from_aos_if_dirty();
+
 	const unsigned int nq = number_of_densities();
 	const unsigned int nv_g = mesh.voxels.size();
 	const bool has_z = ( mesh.z_coordinates.size() > 1 );
@@ -1220,6 +1227,10 @@ void Microenvironment::compute_gradient_vector( int n )
 		inv_two_dz = 1.0 / ( 2.0 * mesh.dz );
 		gradient_constants_defined = true;
 	}
+
+	// See compute_all_gradient_vectors: ensure SoA is current before reading soa_p,
+	// otherwise a mid-step sense (which sets aos_dirty) leaves soa_p stale here.
+	sync_soa_from_aos_if_dirty();
 
 	indices = cartesian_indices( n );
 	const unsigned int nq = number_of_densities();

@@ -12,7 +12,7 @@ GPU hardware). Start there when resuming GPU work.
 | [SETUP.md](SETUP.md) | **Start here on a fresh machine** — prerequisites, clone, build, test/benchmark, GPU build, physigym. Written for a human or LLM agent. |
 | [biofvm-optimizations.md](biofvm-optimizations.md) | CPU optimizations: SoA layout, flattened Thomas coeffs, OpenMP, lazy AoS↔SoA transpose. Timings. |
 | [cuda-biofvm.md](cuda-biofvm.md) | CUDA/GPU port (Scope B, dual-backend): architecture, secretion kernel, field residency, status, next steps. |
-| [verify-discrepancy.md](verify-discrepancy.md) | **OPEN BUG**: optimized BioFVM diverges from the reference on low/zero-diffusion substrates in the full RL sim. |
+| [verify-discrepancy.md](verify-discrepancy.md) | **RESOLVED (2026-06-15)**: the verify discrepancy was a stale-SoA read in gradient computation (+ a 4-thread test footgun). `make verify` now PASSES at 5e-14; CPU is 1.63x faster and bit-equivalent. |
 
 Benchmarking & correctness methodology lives in [`BENCHMARKS.md`](../../BENCHMARKS.md).
 
