@@ -63,3 +63,6 @@ custom_modules/**/*.egg-info/
 __pycache__/
 *.py[cod]
 paraBioFVM/
+
+# PhysiCell auto-generated citation dump (printed on every run)
+ALL_CITATIONS.txt
