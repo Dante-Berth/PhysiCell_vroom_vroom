@@ -31,4 +31,13 @@ User has **no GPU currently** → hard constraint: must compile + be correct on 
 
 **NOT yet done / next steps:** (1) wire into auto_choose_diffusion_decay_solver; (2) Dirichlet-on-device kernel (still host-routed; stub kernel exists); (3) gradient computation on GPU; (4) internalized-substrate-tracking branch in secretion kernel (only non-tracking path ported); (5) benchmark on real GPU (need hardware); (6) multi-cell-per-voxel: GPU does index-order, CPU omp races — see KEY FINDING above.
 
+**REAL-GPU NUMBERS NOW EXIST (RTX 4090, supersedes the "no GPU / unmeasurable" caveats above):**
+the "no GPU" hard constraint in this file is STALE — machine has an RTX 4090 + nvcc 13.1.
+`make test-cuda-gpu` PASS @1.78e-15. `make bench3 ARGS="160 160 80 20000 100"` (2M voxels, 8 thr):
+ref 40.4 / cpu-opt 27.4 / GPU 9.13 ms/step → GPU 4.4x vs stock BioFVM, 3.0x vs CPU-opt.
+`make bench-cuda-gpu`: residency holds (1 upload + 1 download / 200 steps). The dual-backend
+abstraction's ~0% CPU overhead PLUS the on-device speedup are both confirmed. See memory
+[[gpu-hardware-available]] for the full size/thread sweep and the secretion-cost caveat at high
+cell counts.
+
 Prior art to not reinvent: BioFVM-X (published GPU/MPI BioFVM).

@@ -62,3 +62,4 @@ custom_modules/**/build/
 custom_modules/**/*.egg-info/
 __pycache__/
 *.py[cod]
+paraBioFVM/
