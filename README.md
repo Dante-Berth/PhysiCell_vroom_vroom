@@ -17,6 +17,43 @@ Visit http://MathCancer.org/blog for the latest tutorials and help.
 **Notable recognition:**
 + [2019 PLoS Computational Biology Research Prize for Public Impact](https://blogs.plos.org/biologue/2019/05/31/announcing-the-winners-of-the-2019-plos-computational-biology-research-prize/)
 
+### CPU-only vs. CPU+GPU builds
+
+The CUDA GPU-resident diffusion solver is **optional**. The diffusion source
+(`BioFVM/BioFVM_diffusion_cuda.cu`) compiles two ways from the same code: a pure
+C++ CPU fallback (default, no GPU or CUDA toolkit required) and a CUDA build via
+`nvcc` (requires an NVIDIA GPU + `nvcc` on `PATH`). At runtime the GPU solver is
+only selected when a CUDA build is used *and* the problem is large enough; the
+CPU build never touches the GPU.
+
+#### CPU only (no GPU, no CUDA toolkit needed)
+
+This is the default. Nothing special is required — `make` / `make classic` build
+a pure-CPU executable, even though `BioFVM_diffusion_cuda.o` is part of the build
+(it links in as the CPU fallback and is never selected at runtime).
+
+```sh
+make                 # populate + build the default project (CPU)
+make classic         # build the project directly (CPU)
+make test-cuda       # correctness test, CPU fallback (no GPU needed)
+make bench3-cpu      # CPU-optimized 3D diffusion benchmark
+```
+
+#### CPU + GPU (requires NVIDIA GPU + nvcc)
+
+Use the `*-gpu` targets. These rebuild `BioFVM_diffusion_cuda.cu` with `nvcc` and
+`-D BioFVM_USE_CUDA`, link the CUDA runtime, and run the actual GPU kernels.
+Verify the toolkit first with `nvcc --version` (override the compiler with
+`make NVCC=/path/to/nvcc ...` if it is not on `PATH`).
+
+```sh
+make test-cuda-gpu          # correctness test on the GPU
+make test-cuda-integration  # GPU vs CPU solver through the live engine
+make bench-cuda-gpu         # real-GPU diffusion benchmark
+make bench3-gpu             # GPU-resident 3D diffusion benchmark
+make test-gpu-autoselect-gpu # checks GPU is auto-selected only above the size threshold
+```
+
 ### Key makefile rules:
 
 **`make`**: compiles the current project. If no 
