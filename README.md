@@ -9,6 +9,16 @@
 * 1.14.1 : 13 December 2024
 * 1.14.2 : 20 January 2025
 
+## Why it's faster
+
+The framework and APIs are unchanged — only the computational hot paths are optimized. Every optimization is gated on a correctness check (bit-for-bit where verified), so the same model produces the same results. The speedups come from three axes:
+
+1. **BioFVM diffusion solver (CPU).** Struct-of-arrays data layout, flattened/precomputed Thomas-solver coefficients, and OpenMP parallelism. The three-way micro-benchmark (32 threads, ms/step) shows the diffusion+secretion loop at 4M voxels drop from **84.1 ms (reference) → 36.2 ms (CPU-opt), a ~2.3x speedup**.
+2. **Optional CUDA GPU-resident diffusion.** A dual-backend solver keeps the field resident on the GPU and is auto-selected only on large 3D grids (≥ ~1M voxels), where it beats the CPU-opt solver. Real-GPU (RTX 4090 vs 32-thread CPU): **~1.1x @256K, ~1.6x @2M, ~2.0x @4M voxels** — and ~4.0x vs the original reference at 4M.
+3. **Cell mechanics (cell–cell forces).** Mechanics dominate PhysiCell's per-step cost (~86% of `update_all_cells`, `update_velocity` alone ~52%). Hotspot-targeted optimizations here keep cell trajectories bit-identical.
+
+Full methodology, correctness discipline, and how to reproduce the numbers are in **[BENCHMARKS.md](BENCHMARKS.md)**.
+
 ## Overview: 
 PhysiCell is a flexible open source framework for building agent-based multicellular models in 3-D tissue environments. This fork (`vroom vroom`) is a drop-in, performance-accelerated build of PhysiCell: the modeling framework and APIs are unchanged, but the computational hot paths are optimized (and optionally GPU-accelerated) so the same models run faster.
 
