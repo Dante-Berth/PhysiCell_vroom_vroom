@@ -66,6 +66,31 @@ make bench3-gpu             # GPU-resident 3D diffusion benchmark
 make test-gpu-autoselect-gpu # checks GPU is auto-selected only above the size threshold
 ```
 
+### Minimal example: load, compile, run (exactly like PhysiCell)
+
+This fork keeps PhysiCell's project layout and Makefile workflow unchanged — `main.cpp` at the root, models in `custom_modules/`, settings in `config/`, and the build produces a single `./project` executable. So the standard PhysiCell loop works as-is:
+
+```sh
+# 1. (optional) load a saved project into the working tree
+make load PROJ=my_project        # copies user_projects/my_project/* into ./
+
+# 2. compile — produces ./project (CPU build; see CPU+GPU section for GPU)
+make classic                     # or: make   (populates + builds the default project)
+
+# 3. run — defaults to config/PhysiCell_settings.xml
+./project
+./project config/PhysiCell_settings_long.xml   # or pass a settings file explicitly
+
+# 4. clean / reset between runs
+make clean                       # remove build artifacts + ./project
+make reset                       # restore the default config
+
+# 5. save your own project so it can be reloaded/shared later
+make save PROJ=my_project        # snapshots main.cpp + Makefile + config/ + custom_modules/
+```
+
+Because the layout and Makefile match upstream PhysiCell, any existing PhysiCell project or `user_projects/` archive loads and compiles here without changes — you just get the accelerated solvers underneath. The acceleration is opt-in at build/runtime: the GPU path only activates with a CUDA build on large grids, and mechanics A/B baselines are env-gated (see [BENCHMARKS.md](BENCHMARKS.md)).
+
 ### Key makefile rules:
 
 **`make`**: compiles the current project. If no 
