@@ -203,9 +203,18 @@ void Basic_Agent::register_microenvironment( Microenvironment* microenvironment_
 
 void Basic_Agent::release_internalized_substrates( void )
 {
-	Microenvironment* pS = get_default_microenvironment(); 
-	
-	// change in total in voxel: 
+	Microenvironment* pS = get_default_microenvironment();
+
+	// A cell that has left the domain has current_voxel_index == -1 (see
+	// register_microenvironment / is_out_of_domain). Indexing voxels(-1) or
+	// (*pS)(-1) below is an out-of-bounds access and segfaults (notably when
+	// such a cell is die()'d during an episode reset). There is no voxel to
+	// release into, so skip the release for out-of-domain agents.
+	if( current_voxel_index < 0 ||
+	    current_voxel_index >= (int) pS->number_of_voxels() )
+	{ return; }
+
+	// change in total in voxel:
 	// total_ext = total_ext + fraction*total_internal 
 	// total_ext / vol_voxel = total_ext / vol_voxel + fraction*total_internal / vol_voxel 
 	// density_ext += fraction * total_internal / vol_volume 
