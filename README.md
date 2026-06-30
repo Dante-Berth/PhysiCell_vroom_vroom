@@ -1,4 +1,6 @@
-# PhysiCell: an Open Source Physics-Based Cell Simulator for 3-D Multicellular Systems
+# PhysiCell (vroom vroom): a Performance-Accelerated Build of the Open Source Physics-Based Cell Simulator for 3-D Multicellular Systems
+
+> **What this fork is:** `PhysiCell_vroom_vroom` is an *acceleration* of [PhysiCell](https://github.com/MathCancer/PhysiCell). It keeps PhysiCell's models and APIs identical but speeds up the hot paths — the BioFVM diffusion solver (with an optional CUDA GPU-resident path), cell mechanics, and secretion/uptake — to run the same simulations faster. Results stay bit-for-bit equivalent to upstream where verified; see the CUDA notes and benchmarks below.
 
 **Versions:** 1.14.0 - 
 
@@ -8,7 +10,7 @@
 * 1.14.2 : 20 January 2025
 
 ## Overview: 
-PhysiCell is a flexible open source framework for building agent-based multicellular models in 3-D tissue environments.
+PhysiCell is a flexible open source framework for building agent-based multicellular models in 3-D tissue environments. This fork (`vroom vroom`) is a drop-in, performance-accelerated build of PhysiCell: the modeling framework and APIs are unchanged, but the computational hot paths are optimized (and optionally GPU-accelerated) so the same models run faster.
 
 **Reference:** A Ghaffarizadeh, R Heiland, SH Friedman, SM Mumenthaler, and P Macklin, PhysiCell: an Open Source Physics-Based Cell Simulator for Multicellular Systems, PLoS Comput. Biol. 14(2): e1005991, 2018. DOI: [10.1371/journal.pcbi.1005991](https://dx.doi.org/10.1371/journal.pcbi.1005991)
 
