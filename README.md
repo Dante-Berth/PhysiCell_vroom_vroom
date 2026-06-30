@@ -1,13 +1,8 @@
-# PhysiCell (vroom vroom): a Performance-Accelerated Build of the Open Source Physics-Based Cell Simulator for 3-D Multicellular Systems
+# PhysiCell (vroom vroom 🏎️): a Performance-Accelerated Build of the Open Source Physics-Based Cell Simulator for 3-D Multicellular Systems
 
 > **What this fork is:** `PhysiCell_vroom_vroom` is an *acceleration* of [PhysiCell](https://github.com/MathCancer/PhysiCell). It keeps PhysiCell's models and APIs identical but speeds up the hot paths — the BioFVM diffusion solver (with an optional CUDA GPU-resident path), cell mechanics, and secretion/uptake — to run the same simulations faster. Results stay bit-for-bit equivalent to upstream where verified; see the CUDA notes and benchmarks below.
 
-**Versions:** 1.14.0 - 
-
-**Release dates:** 15 September 2024 - 
-* 1.14.0 : 15 September 2024
-* 1.14.1 : 13 December 2024
-* 1.14.2 : 20 January 2025
+**Based on PhysiCell** [v1.14.2](https://github.com/MathCancer/PhysiCell/releases/tag/1.14.2)
 
 ## Why it's faster
 
@@ -163,7 +158,10 @@ See changes.md for the full change log.
 
 * * * 
 
-## Release summary: 
+## Release summary (upstream PhysiCell v1.14):
+
+> The notes below describe the upstream [PhysiCell](https://github.com/MathCancer/PhysiCell) v1.14 release that this fork is based on — they are not the `vroom_vroom` acceleration work. For what this fork changes, see [Why it's faster](#why-its-faster) and [BENCHMARKS.md](BENCHMARKS.md).
+
 Version 1.14 upgrades the Cell Beheavior Hypothesis Grammar (to version 3), including refinements to cell phagocytosis, effector attack, and cell damage/integrity in response to community discussions and peer review. It also introduces numerous refinements to cell division, random seeds, and randomized parameter initialization, as well as upgrades to PhysiBoSS and PhysiMeSS and bug fixes. Other refinements are "under the hood," including new GitHub actions and improved automation of testing, as well as improvements to MultiCellDS output. 
 
 ### Version 1.14.2 (20 Jan 2025): 
