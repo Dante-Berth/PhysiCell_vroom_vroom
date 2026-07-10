@@ -182,7 +182,6 @@ class Cell : public Basic_Agent
 	void advance_bundled_phenotype_functions( double dt_ ); 
 	
 	void add_potentials(Cell*);       // Add repulsive and adhesive forces.
-	void add_potentials_baseline(Cell*); // frozen original (for verify/benchmark A/B)
 	void set_previous_velocity(double xV, double yV, double zV);
 	int get_current_mechanics_voxel_index();
 	void turn_off_reactions(double); 		  // Turn off all the reactions of the cell
@@ -262,7 +261,7 @@ void delete_cell( Cell* );
 void save_all_cells_to_matlab( std::string filename ); 
 
 //function to check if a neighbor voxel contains any cell that can interact with me
-bool is_neighbor_voxel(Cell* pCell, const std::vector<double>& myVoxelCenter, const std::vector<double>& otherVoxelCenter, int otherVoxelIndex);
+bool is_neighbor_voxel(Cell* pCell, std::vector<double> myVoxelCenter, std::vector<double> otherVoxelCenter, int otherVoxelIndex);  
 
 
 extern std::unordered_map<std::string,Cell_Definition*> cell_definitions_by_name; 

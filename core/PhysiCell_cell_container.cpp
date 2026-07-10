@@ -71,42 +71,9 @@
 #include "PhysiCell_cell.h"
 
 #include <algorithm>
-#include <iterator>
+#include <iterator> 
 
 using namespace BioFVM;
-
-#ifdef PHYSICELL_PROFILE_STEP
-// Lightweight per-phase wall-time profiler for update_all_cells. Zero cost unless
-// compiled with -DPHYSICELL_PROFILE_STEP. Accumulates seconds per named phase and
-// prints a breakdown at process exit.
-#include <chrono>
-#include <cstdio>
-namespace {
-	double _ph_secretion=0,_ph_intra=0,_ph_phenotype=0,_ph_divdie=0,
-	       _ph_gradients=0,_ph_interactions=0,_ph_custom=0,_ph_velocity=0,
-	       _ph_springs=0,_ph_stdinter=0,_ph_position=0;
-	struct _StepProfReport { ~_StepProfReport() {
-		double mech=_ph_gradients+_ph_interactions+_ph_custom+_ph_velocity+_ph_springs+_ph_stdinter+_ph_position;
-		double tot=_ph_secretion+_ph_intra+_ph_phenotype+_ph_divdie+mech;
-		if(tot<=0) return;
-		std::fprintf(stderr,"\n[PROFILE_STEP] update_all_cells total=%.3fs\n",tot);
-		auto L=[&](const char*n,double v){ std::fprintf(stderr,"  %-22s %8.3fs  %5.1f%%\n",n,v,100*v/tot); };
-		L("secretion",_ph_secretion); L("intracellular",_ph_intra);
-		L("phenotype/cycle",_ph_phenotype); L("divide/die",_ph_divdie);
-		std::fprintf(stderr,"  -- mechanics %.3fs (%.1f%%): --\n",mech,100*mech/tot);
-		L("  gradients",_ph_gradients); L("  interactions",_ph_interactions);
-		L("  custom_rule",_ph_custom); L("  update_velocity",_ph_velocity);
-		L("  springs",_ph_springs); L("  std_interactions",_ph_stdinter);
-		L("  update_position",_ph_position);
-	} } _step_prof_instance;
-	struct _ScopeT { double* acc; std::chrono::high_resolution_clock::time_point t0;
-		_ScopeT(double* a):acc(a),t0(std::chrono::high_resolution_clock::now()){}
-		~_ScopeT(){ *acc += std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-t0).count(); } };
-}
-#define PROF_SCOPE(acc) _ScopeT _scope_##__LINE__(&(acc))
-#else
-#define PROF_SCOPE(acc) do{}while(0)
-#endif
 
 namespace PhysiCell{
 
@@ -155,17 +122,15 @@ void Cell_Container::update_all_cells(double t)
 
 void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double mechanics_dt_ , double diffusion_dt_ )
 {
-	// secretions and uptakes. Syncing with BioFVM is automated.
-	{
-	PROF_SCOPE(_ph_secretion);
-	#pragma omp parallel for
+	// secretions and uptakes. Syncing with BioFVM is automated. 
+
+	#pragma omp parallel for 
 	for( int i=0; i < (*all_cells).size(); i++ )
 	{
 		if( (*all_cells)[i]->is_out_of_domain == false )
 		{
 			(*all_cells)[i]->phenotype.secretion.advance( (*all_cells)[i], (*all_cells)[i]->phenotype , diffusion_dt_ );
 		}
-	}
 	}
 	
 	//if it is the time for running cell cycle, do it!
@@ -175,9 +140,8 @@ void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double me
 	static double mechanics_dt_tolerance = 0.001 * mechanics_dt_; 
 
 	// intracellular update. called for every diffusion_dt, but actually depends on the intracellular_dt of each cell (as it can be noisy)
-	{
-	PROF_SCOPE(_ph_intra);
-	#pragma omp parallel for
+
+	#pragma omp parallel for 
 	for( int i=0; i < (*all_cells).size(); i++ )
 	{
 		if( (*all_cells)[i]->is_out_of_domain == false && initialzed ) {
@@ -194,8 +158,7 @@ void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double me
 			}
 		}
 	}
-	}
-
+	
 	if( time_since_last_cycle > phenotype_dt_ - 0.5 * diffusion_dt_ || !initialzed )
 	{
 		// Reset the max_radius in each voxel. It will be filled in set_total_volume
@@ -207,31 +170,25 @@ void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double me
 			time_since_last_cycle = phenotype_dt_;
 		}
 		
-		// new as of 1.2.1 -- bundles cell phenotype parameter update, volume update, geometry update,
+		// new as of 1.2.1 -- bundles cell phenotype parameter update, volume update, geometry update, 
 		// checking for death, and advancing the cell cycle. Not motility, though. (that's in mechanics)
-		{
-		PROF_SCOPE(_ph_phenotype);
-		#pragma omp parallel for
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
 			if( (*all_cells)[i]->is_out_of_domain == false )
 			{
-				(*all_cells)[i]->advance_bundled_phenotype_functions( time_since_last_cycle );
+				(*all_cells)[i]->advance_bundled_phenotype_functions( time_since_last_cycle ); 
 			}
 		}
-		}
-
-		// process divides / removes
-		{
-		PROF_SCOPE(_ph_divdie);
+		
+		// process divides / removes 
 		for( int i=0; i < cells_ready_to_divide.size(); i++ )
 		{
 			cells_ready_to_divide[i]->divide();
 		}
 		for( int i=0; i < cells_ready_to_die.size(); i++ )
-		{
-			cells_ready_to_die[i]->die();
-		}
+		{	
+			cells_ready_to_die[i]->die();	
 		}
 		num_divisions_in_current_step+=  cells_ready_to_divide.size();
 		num_deaths_in_current_step+=  cells_ready_to_die.size();
@@ -251,91 +208,78 @@ void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double me
 			time_since_last_mechanics = mechanics_dt_;
 		}
 		
-		// new February 2018
+		// new February 2018 
 		// if we need gradients, compute them
-		{
-		PROF_SCOPE(_ph_gradients);
-		if( default_microenvironment_options.calculate_gradients )
+		if( default_microenvironment_options.calculate_gradients ) 
 		{ microenvironment.compute_all_gradient_vectors();  }
-		}
-		// end of new in Feb 2018
-
-		// perform interactions -- new in June 2020
-		{
-		PROF_SCOPE(_ph_interactions);
-		#pragma omp parallel for
+		// end of new in Feb 2018 
+		
+		// perform interactions -- new in June 2020 
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
-			Cell* pC = (*all_cells)[i];
+			Cell* pC = (*all_cells)[i]; 
 			if( pC->functions.contact_function && pC->is_out_of_domain == false )
 			{ evaluate_interactions( pC,pC->phenotype,time_since_last_mechanics ); }
 		}
-		}
+		
+		// perform custom computations 
 
-		// perform custom computations
-		{
-		PROF_SCOPE(_ph_custom);
-		#pragma omp parallel for
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
-			Cell* pC = (*all_cells)[i];
-
+			Cell* pC = (*all_cells)[i]; 
+						
 			if( pC->functions.custom_cell_rule && pC->is_out_of_domain == false )
 			{ pC->functions.custom_cell_rule( pC,pC->phenotype,time_since_last_mechanics ); }
 		}
-		}
-
-		// update velocities
-		{
-		PROF_SCOPE(_ph_velocity);
-		#pragma omp parallel for
+		
+		// update velocities 
+		
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
-			Cell* pC = (*all_cells)[i];
+			Cell* pC = (*all_cells)[i]; 
 			if( pC->functions.update_velocity && pC->is_out_of_domain == false && pC->is_movable )
 			{ pC->functions.update_velocity( pC,pC->phenotype,time_since_last_mechanics ); }
 		}
-		}
 
-		// new March 2023:
+		// new March 2023: 
 		// dynamic spring attachments, followed by built-in springs
-		{
-		PROF_SCOPE(_ph_springs);
+
 		if( PhysiCell_settings.disable_automated_spring_adhesions == false )
 		{
-			#pragma omp parallel for
+			#pragma omp parallel for 
 			for( int i=0; i < (*all_cells).size(); i++ )
 			{
 				Cell* pC = (*all_cells)[i];
-				dynamic_spring_attachments(pC,pC->phenotype,time_since_last_mechanics);
+				if( pC->is_out_of_domain == false )
+				{ dynamic_spring_attachments(pC,pC->phenotype,time_since_last_mechanics); }
 			}
 			#pragma omp parallel for
 			for( int i=0; i < (*all_cells).size(); i++ )
 			{
 				Cell* pC = (*all_cells)[i];
-				if( pC->is_movable )
+				if( pC->is_movable && pC->is_out_of_domain == false )
 				{
 					for( int j=0; j < pC->state.spring_attachments.size(); j++ )
 					{
-						Cell* pC1 = pC->state.spring_attachments[j];
-						// standard_elastic_contact_function_confluent_rest_length(pC,pC->phenotype,pC1,pC1->phenotype,time_since_last_mechanics);
-						standard_elastic_contact_function(pC,pC->phenotype,pC1,pC1->phenotype,time_since_last_mechanics);
+						Cell* pC1 = pC->state.spring_attachments[j]; 
+						// standard_elastic_contact_function_confluent_rest_length(pC,pC->phenotype,pC1,pC1->phenotype,time_since_last_mechanics);  
+						standard_elastic_contact_function(pC,pC->phenotype,pC1,pC1->phenotype,time_since_last_mechanics);  
 					}
 				}
-			}
-		}
+			}	
 		}
 
-		// new March 2022:
-		// run standard interactions (phagocytosis, attack, fusion) here
-		{
-		PROF_SCOPE(_ph_stdinter);
-		#pragma omp parallel for
+		// new March 2022: 
+		// run standard interactions (phagocytosis, attack, fusion) here 
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
 			Cell* pC = (*all_cells)[i];
-			standard_cell_cell_interactions(pC,pC->phenotype,time_since_last_mechanics);
-		}
+			if( pC->is_out_of_domain == false )
+			{ standard_cell_cell_interactions(pC,pC->phenotype,time_since_last_mechanics); }
 		}
 		// super-critical to performance! clear the "dummy" cells from phagocytosis / fusion
 		// otherwise, comptuational cost increases at polynomial rate VERY fast, as O(10,000) 
@@ -353,16 +297,14 @@ void Cell_Container::update_all_cells(double t, double phenotype_dt_ , double me
 		}
 		
 
-		// update positions
-		{
-		PROF_SCOPE(_ph_position);
-		#pragma omp parallel for
+		// update positions 
+		
+		#pragma omp parallel for 
 		for( int i=0; i < (*all_cells).size(); i++ )
 		{
-			Cell* pC = (*all_cells)[i];
+			Cell* pC = (*all_cells)[i]; 
 			if( pC->is_out_of_domain == false && pC->is_movable)
 			{ pC->update_position(time_since_last_mechanics); }
-		}
 		}
 		
 		// When somebody reviews this code, let's add proper braces for clarity!!! 

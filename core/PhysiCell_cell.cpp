@@ -82,7 +82,6 @@
 #endif
 
 #include<limits.h>
-#include <cstdlib>   // for getenv (mechanics baseline A/B switch)
 
 #include <signal.h>  // for segfault
 
@@ -960,103 +959,19 @@ void Cell::copy_function_pointers(Cell* copy_me)
 	return; 
 }
 
-// Optimized force kernel. Adds a squared-distance early-out BEFORE the sqrt and
-// all force math: add_potentials contributes nothing (no velocity change, no
-// pressure, no neighbor record) once the pair is farther apart than the adhesion
-// cutoff max_interactive_distance, which is the largest interaction radius. So
-// rejecting on distance^2 >= max_interactive_distance^2 is bit-identical to the
-// original while skipping the sqrt + branches for the (common) non-interacting
-// pairs that the Moore-neighbor voxel scan still hands us. Set env
-// PHYSICELL_MECH_BASELINE=1 to force the frozen original (for A/B verify/bench).
 void Cell::add_potentials(Cell* other_agent)
-{
-	static const bool use_baseline =
-		( std::getenv("PHYSICELL_MECH_BASELINE") != nullptr );
-	if( use_baseline )
-	{ add_potentials_baseline( other_agent ); return; }
-
-	if( this == other_agent )
-	{ return; }
-
-	static double simple_pressure_scale = 0.027288820670331;
-
-	double distance2 = 0;
-	for( int i = 0 ; i < 3 ; i++ )
-	{
-		displacement[i] = position[i] - other_agent->position[i];
-		distance2 += displacement[i] * displacement[i];
-	}
-
-	const double R = phenotype.geometry.radius + other_agent->phenotype.geometry.radius;
-	const double max_interactive_distance =
-		phenotype.mechanics.relative_maximum_adhesion_distance * phenotype.geometry.radius +
-		other_agent->phenotype.mechanics.relative_maximum_adhesion_distance * other_agent->phenotype.geometry.radius;
-
-	// Early-out: beyond the adhesion cutoff the original does nothing at all.
-	// Compare squared distances to avoid the sqrt for non-interacting pairs.
-	if( distance2 >= max_interactive_distance * max_interactive_distance )
-	{ return; }
-
-	double distance = std::max( sqrt(distance2), 0.00001 );
-
-	// Repulsive
-	double temp_r;
-	if( distance > R )
-	{
-		temp_r = 0;
-	}
-	else
-	{
-		temp_r = -distance;
-		temp_r /= R;
-		temp_r += 1.0;
-		temp_r *= temp_r;
-		state.simple_pressure += ( temp_r / simple_pressure_scale );
-	}
-	double effective_repulsion = sqrt( phenotype.mechanics.cell_cell_repulsion_strength * other_agent->phenotype.mechanics.cell_cell_repulsion_strength );
-	temp_r *= effective_repulsion;
-
-	// Adhesive (we already know distance < max_interactive_distance here)
-	{
-		double temp_a = -distance;
-		temp_a /= max_interactive_distance;
-		temp_a += 1.0;
-		temp_a *= temp_a;
-
-		int ii = find_cell_definition_index( this->type );
-		int jj = find_cell_definition_index( other_agent->type );
-
-		double adhesion_ii = phenotype.mechanics.cell_cell_adhesion_strength * phenotype.mechanics.cell_adhesion_affinities[jj];
-		double adhesion_jj = other_agent->phenotype.mechanics.cell_cell_adhesion_strength * other_agent->phenotype.mechanics.cell_adhesion_affinities[ii];
-
-		double effective_adhesion = sqrt( adhesion_ii*adhesion_jj );
-		temp_a *= effective_adhesion;
-
-		temp_r -= temp_a;
-
-		state.neighbors.push_back(other_agent);
-	}
-
-	if( fabs(temp_r) < 1e-16 )
-	{ return; }
-	temp_r /= distance;
-	axpy( &velocity , temp_r , displacement );
-	return;
-}
-
-void Cell::add_potentials_baseline(Cell* other_agent)
 {
 	// if( this->ID == other_agent->ID )
 	if( this == other_agent )
 	{ return; }
 /*
-	// new April 2022: don't interact with cells with 0 volume
-	// does not seem to really help
+	// new April 2022: don't interact with cells with 0 volume 
+	// does not seem to really help 
 	if( other_agent->phenotype.volume.total < 1e-15 )
 	{ std::cout << "zero size cell in mechanics!" << std::endl; return; }
 */
 	// 12 uniform neighbors at a close packing distance, after dividing out all constants
-	static double simple_pressure_scale = 0.027288820670331; // 12 * (1 - sqrt(pi/(2*sqrt(3))))^2
+	static double simple_pressure_scale = 0.027288820670331; // 12 * (1 - sqrt(pi/(2*sqrt(3))))^2 
 	// 9.820170012151277; // 12 * ( 1 - sqrt(2*pi/sqrt(3)))^2
 
 	double distance = 0; 
@@ -1345,7 +1260,7 @@ void delete_cell( Cell* pDelete )
 	return; 
 }
 
-bool is_neighbor_voxel(Cell* pCell, const std::vector<double>& my_voxel_center, const std::vector<double>& other_voxel_center, int other_voxel_index)
+bool is_neighbor_voxel(Cell* pCell, std::vector<double> my_voxel_center, std::vector<double> other_voxel_center, int other_voxel_index)
 {
 	double max_interactive_distance = pCell->phenotype.mechanics.relative_maximum_adhesion_distance * pCell->phenotype.geometry.radius 
 		+ pCell->get_container()->max_cell_interactive_distance_in_voxel[other_voxel_index];
@@ -3549,7 +3464,11 @@ void detach_cells_as_spring( Cell* pCell_1 , Cell* pCell_2 )
 
 std::vector<Cell*> find_nearby_cells( Cell* pCell )
 {
-	std::vector<Cell*> neighbors = {}; 
+	std::vector<Cell*> neighbors = {};
+
+	// out-of-domain cells have voxel index -1; indexing agent_grid[-1] is UB
+	if( pCell->get_current_mechanics_voxel_index() < 0 )
+	{ return neighbors; }
 
 	// First check the neighbors in my current voxel
 	std::vector<Cell*>::iterator neighbor;
@@ -3579,7 +3498,11 @@ std::vector<Cell*> find_nearby_cells( Cell* pCell )
 
 std::vector<Cell*> find_nearby_interacting_cells( Cell* pCell )
 {
-	std::vector<Cell*> neighbors = {}; 
+	std::vector<Cell*> neighbors = {};
+
+	// out-of-domain cells have voxel index -1; indexing agent_grid[-1] is UB
+	if( pCell->get_current_mechanics_voxel_index() < 0 )
+	{ return neighbors; }
 
 	// First check the neighbors in my current voxel
 	std::vector<Cell*>::iterator neighbor;
