@@ -66,3 +66,5 @@ paraBioFVM/
 
 # PhysiCell auto-generated citation dump (printed on every run)
 ALL_CITATIONS.txt
+custom_modules/
+config/
