@@ -1,0 +1,64 @@
+#####
+# title: pyproject.toml
+#
+# languag: hatch
+# date: 2024-02-05
+# license: BSD-3-Clause
+# author: Elmar Bucher
+#
+# description:
+#   A hatchling and setuptools based setup module.
+# https://hatch.pypa.io/latest/
+# https://setuptools.pypa.io/en/latest/userguide/index.html#
+# https://elmjag.github.io/setuptools.html
+#####
+
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "extending"  # as it would appear on PyPI
+dynamic = ["version"]
+description = "Embed PhysiCell into Python."
+#readme = "README.md"
+requires-python = ">=3.8, <4"
+license = {text="BSD-3-Clause"}
+authors = [{name="Elmar Bucher", email="epbucher@iu.edu"}]
+maintainers = [{name="Elmar Bucher", email="epbucher@iu.edu"}]
+keywords = [
+    "physicell",
+    "python",
+    "c++",
+    "extending",
+    "embedding",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = []
+
+[project.urls]
+"Homepage lab" = "http://www.mathcancer.org/"
+"Homepage project" = "http://physicell.org/"
+Hompage = "https://github.com/elmbeech/physicellembedding"
+Documentation = "https://github.com/elmbeech/physicellembedding/blob/main/README.md"
+Issues = "https://github.com/elmbeech/physicellembedding/issues"
+Source = "https://github.com/elmbeech/physicellembedding"
+#DOI = "https://"
+
+[tool.setuptools.packages.find]
+# All the following settings are optional:
+where = ["."]  # ["."] by default
+include = ["*"]  # ["*"] by default
+exclude = []  # empty by default
+namespaces = true  # true by default
+
+[tool.setuptools]
+include-package-data = false # true by default
