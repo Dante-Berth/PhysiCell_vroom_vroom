@@ -25,9 +25,8 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import numpy as np
 import os
-import skimage as ski
 import sys
-
+import tempfile
 
 # global variable
 physicell.flag_envphysigym = False
@@ -228,8 +227,17 @@ class CorePhysiCellEnv(gymnasium.Env):
 
         # handle figsize
         self.figsize = figsize
-        if not (self.render_mode is None):
-            self.fig, axs = plt.subplots(figsize=self.figsize)
+        self.fig = None
+        self.axs = None
+
+        # Only create figure if rendering is enabled
+        if self.render_mode is not None:
+            import matplotlib.pyplot as plt  # local import avoids global font init
+            self.fig, self.axs = plt.subplots(figsize=self.figsize)
+
+        if self.verbose:
+            print("physigym: self.figsize", self.figsize)
+
         if self.verbose:
             print("physigym: self.figsize", self.figsize)
 
@@ -248,6 +256,7 @@ class CorePhysiCellEnv(gymnasium.Env):
         self.width = self.x_max - self.x_min
         self.height = self.y_max - self.y_min
         self.depth = self.z_max - self.z_min
+        self.total_volume = self.width*self.height*self.depth
         if self.verbose:
             print("physigym: self.x_min", self.x_min)
             print("physigym: self.x_max", self.x_max)
@@ -261,6 +270,7 @@ class CorePhysiCellEnv(gymnasium.Env):
             print("physigym: self.width", self.width)
             print("physigym: self.height", self.height)
             print("physigym: self.depth", self.depth)
+            print("physigym: self.total_volume", self.total_volume)
 
         # handle substrate mapping
         if self.verbose:
@@ -303,26 +313,23 @@ class CorePhysiCellEnv(gymnasium.Env):
             self.cell_type_to_id.keys(), key=self.cell_type_to_id.get
         )
         self.cell_type_count = len(self.cell_type_unique)
+        # handle cell_type mapping
         self.cell_type_to_color = {}
-        if type(cell_type_cmap) is dict:
+        if isinstance(cell_type_cmap, dict):
             for s_cell_type in self.cell_type_unique:
-                try:
-                    self.cell_type_to_color.update(
-                        {s_cell_type: cell_type_cmap[s_cell_type]}
-                    )
-                except KeyError:
-                    self.cell_type_to_color.update({s_cell_type: "gray"})
-        elif type(cell_type_cmap) is str:
-            for i, ar_color in enumerate(
-                plt.get_cmap(cell_type_cmap, self.cell_type_count).colors
-            ):
-                self.cell_type_to_color.update(
-                    {self.cell_type_unique[i]: colors.to_hex(ar_color)}
-                )
+                self.cell_type_to_color[s_cell_type] = cell_type_cmap.get(s_cell_type, "gray")
+
+        elif isinstance(cell_type_cmap, str):
+            import matplotlib.pyplot as plt
+            import matplotlib.colors as mcolors
+            cmap = plt.get_cmap(cell_type_cmap, self.cell_type_count)
+            for i, s_cell_type in enumerate(self.cell_type_unique):
+                self.cell_type_to_color[s_cell_type] = mcolors.to_hex(cmap.colors[i])
         else:
             raise ValueError(
-                f"cell_type_cmap {cell_type_cmap} have to be a dictionary of string or a string."
+                f"cell_type_cmap {cell_type_cmap} must be a dict of strings or a string."
             )
+
         if self.verbose:
             print("physigym: self.cell_type_to_id", sorted(self.cell_type_to_id))
             print("physigym: self.cell_type_unique", self.cell_type_unique)
@@ -437,15 +444,12 @@ class CorePhysiCellEnv(gymnasium.Env):
         if seed is None:
             i_seed = seed
             if self.verbose:
-                print(f"physigym: set {self.settingxml} random_seed to system_clock.")
-            self.x_root.xpath("//random_seed")[0].text = "system_clock"
+                print(f"physigym: set {self.settingxml} random_seed to 42.")
+            self.x_root.xpath("//random_seed")[0].text = "42"
         # handle setting.xml based seeding
         elif seed < 0:
             s_seed = self.x_root.xpath("//random_seed")[0].text.strip()
-            if s_seed == "system_clock":
-                i_seed = None
-            else:
-                i_seed = int(s_seed)
+            i_seed = int(s_seed)
         # handle Gymnasium based seeding
         else:  # seed >= 0
             i_seed = seed
@@ -453,15 +457,13 @@ class CorePhysiCellEnv(gymnasium.Env):
                 print(f"physigym: set {self.settingxml} random_seed to {i_seed}.")
             self.x_root.xpath("//random_seed")[0].text = str(i_seed)
 
-        # rewrite setting xml file
-        self.x_tree.write(self.settingxml, pretty_print=True)
 
         # seed self.np_random number generator
         super().reset(seed=i_seed)
         if self.verbose:
             print(f"physigym: seed random number generator with {i_seed}.")
 
-        # update class whide variables
+        # update class wide variables
         if self.verbose:
             print(f"physigym: update class instance-wide variables.")
         self.episode += 1
@@ -471,7 +473,7 @@ class CorePhysiCellEnv(gymnasium.Env):
         # handle possible keyword arguments input
         self.kwargs.update(kwargs)
         if self.verbose and len(kwargs) > 0:
-            print("physigym: self.kwarg", sorted(self.kwarg))
+            print("physigym: self.kwargs", sorted(self.kwargs))
 
         # load reset values
         self.get_reset_values()
@@ -479,11 +481,10 @@ class CorePhysiCellEnv(gymnasium.Env):
         # generate output folder
         os.makedirs(self.x_root.xpath("//save/folder")[0].text, exist_ok=True)
 
-        # initialize physcell model
+        # initialize physiCell model with the temp XML
         if self.verbose:
             print(f"physigym: declare PhysiCell model instance.")
         physicell.start(self.settingxml, self.episode != 0)
-
         # observe domain
         if self.verbose:
             print(f"physigym: domain observation.")
@@ -500,12 +501,16 @@ class CorePhysiCellEnv(gymnasium.Env):
                 if not (self.metadata["render_fps"] is None):
                     plt.pause(1 / self.metadata["render_fps"])
             else:  # rgb_array
-                self.fig.canvas.setVisible(False)
+                try:
+                    self.fig.canvas.setVisible(False)
+                except AttributeError:  # handle agg backend on headless systems.
+                    pass
 
         # output
         if self.verbose:
             print(
-                f"Warning: per runtime, only one PhysiCellEnv gymnasium environment can be generated.\nto run another env, it will be necessary to fork or spawn the runtime!"
+                f"Warning: per runtime, only one PhysiCellEnv gymnasium environment can be generated.\n"
+                "to run another env, it will be necessary to fork or spawn the runtime!"
             )
             print(f"physigym: ok!")
         return o_observation, d_info
@@ -628,7 +633,7 @@ class CorePhysiCellEnv(gymnasium.Env):
                     # error
                     except KeyError:
                         sys.exit(
-                            f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium discrete action space value detected! {s_action} {o_value} {type(o_value)}."
+                            f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium discrete action space value detected! {s_action} {o_value} {type(o_value)}.\nIn the PhysiCell_setting.xml, have you specified a {s_action} parameter, custom_variable, or custom_vector?"
                         )
 
             # gymnasium action space text (string)
@@ -644,7 +649,7 @@ class CorePhysiCellEnv(gymnasium.Env):
                     # error
                     except KeyError:
                         sys.exit(
-                            f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium text action space value detected! {s_action} {o_value} {type(o_value)}."
+                            f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium text action space value detected! {s_action} {o_value} {type(o_value)}.\nIn the PhysiCell_setting.xml, have you specified a {s_action} parameter, custom_variable, or custom_vector?"
                         )
 
             # gymnasium action space box (bool, int, float in a numpy array)
@@ -658,17 +663,21 @@ class CorePhysiCellEnv(gymnasium.Env):
                     # try vector
                     physicell.set_vector(s_action, list(o_value))
                 except KeyError:
+                    # scalar custom_variable / parameter fallback: unwrap a
+                    # 1-element array to a python float so set_variable /
+                    # set_parameter (which expect a 0-d scalar) accept it.
+                    o_scalar = o_value[0] if o_value.shape == (1,) else o_value
                     # try custom_variable
                     try:
-                        physicell.set_variable(s_action, o_value)
+                        physicell.set_variable(s_action, o_scalar)
                     # try parameter
                     except KeyError:
                         try:
-                            physicell.set_parameter(s_action, o_value)
+                            physicell.set_parameter(s_action, o_scalar)
                         # error
                         except KeyError:
                             sys.exit(
-                                f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium box action space value detected! {s_action} {o_value} {type(o_value)}."
+                                f"Error @ physigym.envs.physicell_core.CorePhysiCellEnv : unprocessable Gymnasium box action space value detected! {s_action} {o_value} {type(o_value)}.\nIn the PhysiCell_setting.xml, have you specified a {s_action} parameter, custom_variable, or custom_vector?"
                             )
 
             # error

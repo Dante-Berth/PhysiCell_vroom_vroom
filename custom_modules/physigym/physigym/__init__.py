@@ -1,6 +1,7 @@
-from gymnasium.envs.registration import register
+from gymnasium.envs.registration import register, registry
 
-register(
+if "physigym/CorePhysiCellEnv-v0" not in registry:
+    register(
      id = "physigym/CorePhysiCellEnv-v0",
      entry_point = "physigym.envs:CorePhysiCellEnv",
      #reward_threshold = float,
@@ -9,9 +10,10 @@ register(
      ##order_enforce = bool, # OrderEnforced wrapper
      #autoreset = bool, # AutoReset wrapper
      ##kwargs = {}  # key word arguments to pass to the environment class
-)
+    )
 
-register(
+if "physigym/ModelPhysiCellEnv-v0" not in registry:
+    register(
      id = "physigym/ModelPhysiCellEnv-v0",
      entry_point = "physigym.envs:ModelPhysiCellEnv",
      #reward_threshold = float,

@@ -36,14 +36,14 @@
     </parallel>
 
     <save>
-        <folder>output/</folder>
+        <folder>output/test/episodes/run_000000/test/episodes/run_000000/test/episodes/run_000000</folder>
         <full_data>
             <interval units="min">15</interval>
-            <enable>true</enable>
+            <enable>false</enable>
         </full_data>
         <SVG>
             <interval units="min">15</interval>
-            <enable>true</enable>
+            <enable>false</enable>
             <plot_substrate enabled="false" limits="false">
                 <substrate>anti_tumoral_factor</substrate>
                 <min_conc>0</min_conc>
@@ -72,12 +72,12 @@
             <initial_condition units="dimensionless">0.0</initial_condition>
             <Dirichlet_boundary_condition units="dimensionless" enabled="False">0.0</Dirichlet_boundary_condition>
             <Dirichlet_options>
-                <boundary_value ID="xmin" enabled="False" />
-                <boundary_value ID="xmax" enabled="False" />
-                <boundary_value ID="ymin" enabled="False" />
-                <boundary_value ID="ymax" enabled="False" />
-                <boundary_value ID="zmin" enabled="False" />
-                <boundary_value ID="zmax" enabled="False" />
+                <boundary_value ID="xmin" enabled="False"/>
+                <boundary_value ID="xmax" enabled="False"/>
+                <boundary_value ID="ymin" enabled="False"/>
+                <boundary_value ID="ymax" enabled="False"/>
+                <boundary_value ID="zmin" enabled="False"/>
+                <boundary_value ID="zmax" enabled="False"/>
             </Dirichlet_options>
         </variable>
         <variable name="pro_tumoral_factor" units="dimensionless" ID="1">
@@ -136,12 +136,12 @@
             <initial_condition units="dimensionless">0.0</initial_condition>
             <Dirichlet_boundary_condition units="dimensionless" enabled="False">0.0</Dirichlet_boundary_condition>
             <Dirichlet_options>
-                <boundary_value ID="xmin" enabled="False" />
-                <boundary_value ID="xmax" enabled="False" />
-                <boundary_value ID="ymin" enabled="False" />
-                <boundary_value ID="ymax" enabled="False" />
-                <boundary_value ID="zmin" enabled="False" />
-                <boundary_value ID="zmax" enabled="False" />
+                <boundary_value ID="xmin" enabled="False"/>
+                <boundary_value ID="xmax" enabled="False"/>
+                <boundary_value ID="ymin" enabled="False"/>
+                <boundary_value ID="ymax" enabled="False"/>
+                <boundary_value ID="zmin" enabled="False"/>
+                <boundary_value ID="zmax" enabled="False"/>
             </Dirichlet_options>
         </variable>
         <options>
