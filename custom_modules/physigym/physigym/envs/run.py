@@ -699,6 +699,161 @@ def run_random_policy(d_arg):
         #   python PhysiCell/video_maker.py --base-dir PhysiCell/data
 
 
+def run_heuristic_policy(d_arg):
+    """Baseline: macrophage-aware rule-based policy (Stage 4), no learning.
+
+    Structurally identical to run_random_policy — same VecEnv, same per-env
+    action-repeat latching, same episode logging — but instead of sampling a
+    random action it asks each env for its ground-truth heuristic action
+    (inject a fixed dose at the tumour-adjacent M2-macrophage centroid; see
+    PhysiCellModel.get_heuristic_action). The heuristic is computed INSIDE each
+    env subprocess (via env_method) where the live `physicell` state and
+    df_alive are available.
+    """
+    device_str = (
+        "cuda" if d_arg["simulation"]["cuda"] and torch.cuda.is_available() else "cpu"
+    )
+    radius = d_arg["rl"].get("heuristic_radius", 10.0)
+    dose = d_arg["rl"].get("heuristic_dose", 0.5)
+    print(
+        f"[heuristic] macrophage-aware baseline on {device_str} "
+        f"(radius={radius} um, dose={dose})"
+    )
+
+    envs = vec_envs(d_arg)
+    envs.reset()
+
+    num_envs = envs.num_envs
+    episode_returns = np.zeros(num_envs, dtype=np.float64)
+    total_steps = d_arg["rl"]["total_timesteps"]
+    local_step = 0
+
+    return_buffers = {"train": deque(maxlen=50), "test": deque(maxlen=50)}
+
+    output_dir = d_arg["model"]["output_dir"]
+    writer = SummaryWriter(log_dir=output_dir)
+
+    if d_arg["simulation"]["wandb_track"]:
+        run = wandb.init(
+            project=d_arg["wandb"]["project"] if "wandb" in d_arg else "SAC_ASYNC_TIP",
+            name=Path(output_dir).name,
+            config=d_arg,
+        )
+
+    pbar = tqdm(total=total_steps, dynamic_ncols=True)
+    action_repeat = d_arg["rl"].get("action_repeat", 1)
+
+    def _heuristic_actions():
+        """Query every live env for its current heuristic action → (num_envs,4)."""
+        per_env = envs.env_method("get_heuristic_action", radius, dose)
+        acts = np.zeros((num_envs, 4), dtype=np.float32)
+        # env_method skips dead envs; map results back onto live indices in order
+        live = [i for i in range(num_envs) if i not in envs.dead_envs]
+        for slot, i in enumerate(live):
+            if slot < len(per_env) and per_env[slot] is not None:
+                acts[i] = np.asarray(per_env[slot], dtype=np.float32)
+        return acts
+
+    try:
+        while local_step < total_steps:
+            actions = _heuristic_actions()
+
+            # Per-env action-repeat latching — identical rationale to the random
+            # and SAC actor loops (a finished env must not have the held action
+            # applied to its freshly auto-reset episode).
+            accumulated_rewards = np.zeros(num_envs, dtype=np.float32)
+            latched = np.zeros(num_envs, dtype=bool)
+            lat_next_obs, lat_dones, lat_infos = None, None, None
+            for _rep in range(action_repeat):
+                step_obs, step_rewards, step_dones, step_infos = envs.step(actions)
+                accumulated_rewards += step_rewards.astype(np.float32) * (~latched)
+                if lat_next_obs is None:
+                    if isinstance(step_obs, dict):
+                        lat_next_obs = {k: v.copy() for k, v in step_obs.items()}
+                    else:
+                        lat_next_obs = np.array(step_obs).copy()
+                    lat_dones = np.array(step_dones).copy()
+                    lat_infos = list(step_infos)
+                newly_done = np.asarray(step_dones) & (~latched)
+                for i in np.where(newly_done)[0]:
+                    if isinstance(step_obs, dict):
+                        for k in lat_next_obs:
+                            lat_next_obs[k][i] = step_obs[k][i]
+                    else:
+                        lat_next_obs[i] = step_obs[i]
+                    lat_dones[i] = step_dones[i]
+                    lat_infos[i] = step_infos[i]
+                latched |= np.asarray(step_dones)
+                still = ~latched
+                if isinstance(step_obs, dict):
+                    for k in lat_next_obs:
+                        lat_next_obs[k][still] = step_obs[k][still]
+                else:
+                    lat_next_obs[still] = np.asarray(step_obs)[still]
+                for i in np.where(still)[0]:
+                    lat_infos[i] = step_infos[i]
+                    lat_dones[i] = step_dones[i]
+                if latched.all():
+                    break
+                # re-aim for the next repeat only if we are NOT latching actions
+                # across the repeat block; here we hold the action for the whole
+                # block (matching random baseline), so no re-query.
+            rewards, dones, infos = accumulated_rewards, lat_dones, lat_infos
+
+            active_mask = np.ones(num_envs, dtype=np.float64)
+            for di in envs.dead_envs:
+                active_mask[di] = 0.0
+                episode_returns[di] = 0.0
+            episode_returns += rewards.astype(np.float64) * active_mask
+            local_step += num_envs - len(envs.dead_envs)
+
+            for i in range(num_envs):
+                if i in envs.dead_envs:
+                    continue
+                info = infos[i]
+                if dones[i]:
+                    split = info.get("train_test", "train")
+                    typemode = info.get("type_mode", "unknown")
+                    ep_ret = float(episode_returns[i])
+                    ep_len = int(info.get("step_episode", 0))
+                    a_autocorr = float(info.get("action_autocorr_lag1", 0.0))
+
+                    return_buffers[split].append(ep_ret)
+                    log_dict = {
+                        f"charts/{split}_return_raw": ep_ret,
+                        f"charts/{split}_{typemode}_return_raw": ep_ret,
+                        f"charts/{split}_episode_length": ep_len,
+                        f"charts/{split}_action_autocorr_lag1": a_autocorr,
+                        f"charts/{split}_{typemode}_action_autocorr": a_autocorr,
+                    }
+                    buf = return_buffers[split]
+                    if len(buf) >= 10:
+                        log_dict[f"charts/{split}_return_mean"] = np.mean(buf)
+                        log_dict[f"charts/{split}_return_std"] = np.std(buf)
+
+                    if d_arg["simulation"]["wandb_track"]:
+                        run.log(log_dict, step=local_step)
+                    else:
+                        for tag, val in log_dict.items():
+                            writer.add_scalar(tag, val, local_step)
+                    print(
+                        f"[heuristic] step={local_step}  ep_return={ep_ret:.3f}  "
+                        f"ep_len={ep_len}  mode={split}/{typemode}"
+                    )
+                    episode_returns[i] = 0.0
+
+            pbar.update(num_envs - len(envs.dead_envs))
+
+    except KeyboardInterrupt:
+        print("[heuristic] Interrupted.")
+    finally:
+        pbar.close()
+        envs.close()
+        writer.close()
+        if d_arg["simulation"]["wandb_track"]:
+            wandb.finish()
+
+
 def run_async_sac(d_arg):
     # ── Sliding-window return trackers ──────────────────────────
     return_buffers = {
@@ -1349,11 +1504,27 @@ if __name__ == "__main__":
     )
     parser.add_argument("--action_mode", type=str, default="full")
     parser.add_argument(
+        "--heuristic_radius",
+        type=float,
+        default=10.0,
+        help="For --mode heuristic: radius (microns) within which a macrophage "
+        "counts as tumour-adjacent. Tune over a few values (e.g. 5/10/20).",
+    )
+    parser.add_argument(
+        "--heuristic_dose",
+        type=float,
+        default=0.5,
+        help="For --mode heuristic: fixed normalised dose applied when a "
+        "tumour-adjacent M2 macrophage exists.",
+    )
+    parser.add_argument(
         "--mode",
         type=str,
         default="train",
-        choices=["train", "random"],
-        help="'train' runs SAC; 'random' runs a random-policy baseline.",
+        choices=["train", "random", "heuristic"],
+        help="'train' runs SAC; 'random' runs a random-policy baseline; "
+        "'heuristic' runs the macrophage-aware rule-based baseline "
+        "(inject at tumour-adjacent macrophages).",
     )
 
     args = parser.parse_args()
@@ -1448,6 +1619,8 @@ if __name__ == "__main__":
         "checkpoint_frequency": args.checkpoint_frequency,
         "grad_utd": args.grad_utd,
         "action_repeat": args.action_repeat,
+        "heuristic_radius": args.heuristic_radius,
+        "heuristic_dose": args.heuristic_dose,
         "async_actor": b_async_actor,
         "resume_path": args.resume,
         "autotune": True,
@@ -1510,5 +1683,7 @@ if __name__ == "__main__":
 
     if args.mode == "random":
         run_random_policy(d_arg=d_arg)
+    elif args.mode == "heuristic":
+        run_heuristic_policy(d_arg=d_arg)
     else:
         run_async_sac(d_arg=d_arg)
