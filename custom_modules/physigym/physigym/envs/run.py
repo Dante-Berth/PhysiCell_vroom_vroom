@@ -1657,8 +1657,8 @@ if __name__ == "__main__":
     d_arg_generation = {
         "params": params,
         "seed": i_seed,
-        "mode_train": ["rectangle"],
-        "mode_test": ["network_field"],
+        "mode_train": ["network_field"],
+        "mode_test": ["rectangle"],
     }
 
     d_arg = {

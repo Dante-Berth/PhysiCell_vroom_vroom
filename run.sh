@@ -27,7 +27,7 @@ fi
 # ── 0. Shared configuration ─────────────────────────────────────
 # Defined before section 1: the random baseline reads OBS_MODES/W_* too, and
 # `set -u` aborts on any use before assignment.
-SEEDS=(1 2 3)
+SEEDS=(1 2 3 4 5)
 
 
  OBS_MODES=(
@@ -63,24 +63,9 @@ for seed in "${SEEDS[@]}"; do
       --max_time_episode 7200     \
       --total_timesteps 100000    \
       --wandb          true       \
-      --name           "best_hyperparameters_SAC_${obs}_w_cell=${W_CELL}_w_dose=${W_DOSE}_w_smooth=${W_SMOOTH}_seed${seed}"
+      --name           "SAC_${obs}_w_cell=${W_CELL}_w_dose=${W_DOSE}_w_smooth=${W_SMOOTH}_seed${seed}_mode_train_network_field_mode_test_rectangle"
   done
 done
-
-# ── 3. Compile videos once, at the very end (deferred compilation) ─
-# Compiling inside the training loop re-scanned the whole data/ tree on
-# every iteration (25x) for no benefit. Instead compile a single time here,
-# and only for the last 10 runs per env/split (--last-n) so we don't render
-# thousands of intermediate test episodes.
-echo "============================================================"
-echo "  Compiling videos (last 10 runs per env)..."
-echo "============================================================"
-"$PYTHON" video_maker.py --base-dir data/ --last-n 20
-
-echo "============================================================"
-echo "  All training and video compilation complete!"
-echo "============================================================"
-
 
 # ── 2. Random policy baseline — one run per seed (obs mode agnostic) ──
 # Random baseline over its own seed list (independent of the training SEEDS).
@@ -106,8 +91,22 @@ for seed in "${RANDOM_SEEDS[@]}"; do
     --max_time_episode 7200          \
     --total_timesteps 100000         \
     --wandb          true            \
-    --name           "best_hyperparameters_RANDOM_baseline_w_cell=${W_CELL}_w_dose=${W_DOSE}_w_smooth=${W_SMOOTH}_seed${seed}"
+    --name           "random_baseline_${obs}_w_cell=${W_CELL}_w_dose=${W_DOSE}_w_smooth=${W_SMOOTH}_seed${seed}_mode_train_network_field_mode_test_rectangle"
 done
+
+# ── 3. Compile videos once, at the very end (deferred compilation) ─
+# Compiling inside the training loop re-scanned the whole data/ tree on
+# every iteration (25x) for no benefit. Instead compile a single time here,
+# and only for the last 10 runs per env/split (--last-n) so we don't render
+# thousands of intermediate test episodes.
+echo "============================================================"
+echo "  Compiling videos (last 10 runs per env)..."
+echo "============================================================"
+"$PYTHON" video_maker.py --base-dir data/ --last-n 20
+
+echo "============================================================"
+echo "  All training and video compilation complete!"
+echo "============================================================"
 
 
 
