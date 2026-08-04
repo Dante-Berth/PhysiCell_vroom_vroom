@@ -411,20 +411,53 @@ void Cell_Container::flag_cell_for_removal( Cell* pCell )
 	return; 
 }
 
+// Track the container this function handed out last, so the next call can
+// reclaim it. Repeated calls happen on every episode reset in the embedded
+// (physigym) build, and without this each reset leaked a Cell_Container --
+// including its agent_grid, sized to the mechanics voxel count.
+//
+// We remember it as a Cell_Container* rather than deleting m.agent_container:
+// Agent_Container has no virtual destructor, so deleting a Cell_Container
+// through an Agent_Container* is undefined behavior. Tracking the derived
+// pointer also guarantees we never free a container this function did not
+// allocate.
+//
+// NOTE: this assumes one live cell container at a time, which is what the rest
+// of PhysiCell assumes anyway (all_cells is a single global). If per-
+// microenvironment containers are ever needed, this must move into
+// Microenvironment and Agent_Container needs a virtual destructor.
+static Cell_Container* previously_created_cell_container = NULL;
+
 Cell_Container* create_cell_container_for_microenvironment( BioFVM::Microenvironment& m , double mechanics_voxel_size )
 {
 	Cell_Container* cell_container = new Cell_Container;
-	cell_container->initialize( m.mesh.bounding_box[0], m.mesh.bounding_box[3], 
-		m.mesh.bounding_box[1], m.mesh.bounding_box[4], 
+	cell_container->initialize( m.mesh.bounding_box[0], m.mesh.bounding_box[3],
+		m.mesh.bounding_box[1], m.mesh.bounding_box[4],
 		m.mesh.bounding_box[2], m.mesh.bounding_box[5],  mechanics_voxel_size );
-	m.agent_container = (Agent_Container*) cell_container; 
-	
-	if( BioFVM::get_default_microenvironment() == NULL )
-	{ 
-		BioFVM::set_default_microenvironment( &m ); 
+	m.agent_container = (Agent_Container*) cell_container;
+
+	// Any cell that outlived the previous container cached a pointer to it in
+	// Cell::get_container(), which never re-checks. Drop those caches so they
+	// re-resolve to the new container; otherwise a surviving cell would keep
+	// indexing the old agent_grid and underlying_mesh. Normally the reset path
+	// has already deleted every cell and this loop is empty.
+	if( all_cells != NULL )
+	{
+		for( int i=0 ; i < (*all_cells).size() ; i++ )
+		{ (*all_cells)[i]->invalidate_container_cache(); }
 	}
-	
-	return cell_container; 
+
+	// Nothing points at the old container now, so it is safe to reclaim.
+	if( previously_created_cell_container != NULL && previously_created_cell_container != cell_container )
+	{ delete previously_created_cell_container; }
+	previously_created_cell_container = cell_container;
+
+	if( BioFVM::get_default_microenvironment() == NULL )
+	{
+		BioFVM::set_default_microenvironment( &m );
+	}
+
+	return cell_container;
 }
 
 };

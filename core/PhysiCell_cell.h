@@ -245,8 +245,12 @@ class Cell : public Basic_Agent
 	void set_phenotype( Phenotype& phenotype ); // no longer needed?
 	void update_radius();
 	Cell_Container * get_container();
-	
-	std::vector<Cell*>& cells_in_my_container( void ); 
+	// get_container() caches the container on first use and never re-checks it.
+	// Call this when the microenvironment's container is replaced, so the next
+	// get_container() re-resolves instead of using the stale (replaced) one.
+	void invalidate_container_cache( void );
+
+	std::vector<Cell*>& cells_in_my_container( void );
 	std::vector<Cell*> nearby_cells( void ); // new in 1.8.0 
 	std::vector<Cell*> nearby_interacting_cells( void ); // new in 1.8.0 
 	

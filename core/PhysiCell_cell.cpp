@@ -837,6 +837,12 @@ Cell_Container * Cell::get_container()
 	return container;
 }
 
+void Cell::invalidate_container_cache( void )
+{
+	container = NULL;
+	return;
+}
+
 void Cell::die()
 {
 	delete_cell(this);
