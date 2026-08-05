@@ -23,7 +23,7 @@
     </domain>
 
     <overall>
-        <max_time units="min">10080.0</max_time>
+        <max_time units="min">7200.0</max_time>
         <time_units>min</time_units>
         <space_units>micron</space_units>
         <dt_diffusion units="min">0.01</dt_diffusion>
@@ -36,7 +36,7 @@
     </parallel>
 
     <save>
-        <folder>output/test/episodes/run_000000/test/episodes/run_000000/test/episodes/run_000000</folder>
+        <folder>data/random_baseline_img_mc_cells_m1m2_w_cell=0.3_w_dose=2.0_w_smooth=0.0_seed5_mode_train_network_field_mode_test_rectangle_5_img_mc_cells_substrates_targeted_1785815727/env0/train/episodes/run_000055</folder>
         <full_data>
             <interval units="min">15</interval>
             <enable>false</enable>
@@ -59,7 +59,7 @@
     <options>
         <legacy_random_points_on_sphere_in_divide>false</legacy_random_points_on_sphere_in_divide>
         <virtual_wall_at_domain_edge>true</virtual_wall_at_domain_edge>
-        <random_seed>5</random_seed>
+        <random_seed>42</random_seed>
         <disable_automated_spring_adhesions>true</disable_automated_spring_adhesions>
     </options>
 
@@ -415,7 +415,7 @@
                             <normalize_each_gradient>false</normalize_each_gradient>
                             <chemotactic_sensitivities>
                                 <chemotactic_sensitivity substrate="anti_tumoral_factor">0.3</chemotactic_sensitivity>
-                                <chemotactic_sensitivity substrate="pro_tumoral_factor">0</chemotactic_sensitivity>
+                                <chemotactic_sensitivity substrate="pro_tumoral_factor">-1.5e-1</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="drug_1">0.0</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="tumor_molecule">0.0</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="cytokine">0.0</chemotactic_sensitivity>
@@ -583,8 +583,8 @@
                             <enabled>false</enabled>
                             <normalize_each_gradient>true</normalize_each_gradient>
                             <chemotactic_sensitivities>
-                                <chemotactic_sensitivity substrate="anti_tumoral_factor">0.3</chemotactic_sensitivity>
-                                <chemotactic_sensitivity substrate="pro_tumoral_factor">-1.5e-1</chemotactic_sensitivity>
+                                <chemotactic_sensitivity substrate="anti_tumoral_factor">0.0</chemotactic_sensitivity>
+                                <chemotactic_sensitivity substrate="pro_tumoral_factor">0.0</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="drug_1">0.0</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="tumor_molecule">0.0</chemotactic_sensitivity>
                                 <chemotactic_sensitivity substrate="cytokine">0.0</chemotactic_sensitivity>
@@ -668,8 +668,8 @@
 
     <initial_conditions>
         <cell_positions type="csv" enabled="true">
-            <folder>./config</folder>
-            <filename>cells.csv</filename>
+            <folder>data/random_baseline_img_mc_cells_m1m2_w_cell=0.3_w_dose=2.0_w_smooth=0.0_seed5_mode_train_network_field_mode_test_rectangle_5_img_mc_cells_substrates_targeted_1785815727/env0/train/initial_conditions/generated</folder>
+            <filename>ic_000055.csv</filename>
         </cell_positions>
     </initial_conditions>
 
