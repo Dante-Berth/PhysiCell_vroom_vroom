@@ -93,7 +93,26 @@ def build_xml(dst, save_folder, ic_csv, seed, max_time, faces, value, drug_D,
               "drug_1_amount_used"):
         put(f"//user_parameters/{p}", 0)
 
-    put("//initial_conditions/cell_positions/folder", os.path.dirname(ic_csv))
+    # ⚠️ THE trap of this module. The tracked XML gives the ruleset folder as the
+    # RELATIVE path "./config", and the binary resolves it against its working
+    # directory. We deliberately run each task in its own scratch dir (so that
+    # main.cpp's output/episodeNNNNNNNN lands somewhere private), and there is no
+    # ./config there, so PhysiCell loaded ZERO cell rules and said nothing about it:
+    # cell_rules_parsed.csv came out empty and detailed_rules.txt was a bare header.
+    #
+    # The drug acts on cells ONLY through those rules, so every run silently became
+    # an untreated run. It cost a 156-episode grid whose treated and untreated arms
+    # were bit-identical, which is what exposed it. Absolutise every relative path.
+    rs = root.xpath("//cell_rules/rulesets/ruleset/folder")
+    if rs:
+        rs[0].text = os.path.join(PROJECT_ROOT, "config")
+    for node in root.xpath("//initial_condition/filename") + \
+            root.xpath("//dirichlet_nodes/filename"):
+        if node.text and node.text.startswith("./"):
+            node.text = os.path.join(PROJECT_ROOT, node.text[2:])
+
+    put("//initial_conditions/cell_positions/folder",
+        os.path.abspath(os.path.dirname(ic_csv)))
     put("//initial_conditions/cell_positions/filename", os.path.basename(ic_csv))
     put("//random_seed", int(seed))
 
@@ -201,6 +220,17 @@ def run(task):
     final = os.path.join(ep0, "final_microenvironment0.mat")
     ok = os.path.exists(final)
 
+    # ⚠️ Assert the cell rules actually loaded. PhysiCell resolves the ruleset
+    # folder against its CWD and, when it finds nothing, loads zero rules and
+    # carries on silently. drug_1 acts on cells ONLY through those rules, so a
+    # run with no rules is an untreated run wearing a treated run's name. This
+    # check is what stands between that and a plausible-looking null result.
+    n_rules = 0
+    parsed = os.path.join(ep0, "cell_rules_parsed.csv")
+    if os.path.exists(parsed):
+        with open(parsed) as fh:
+            n_rules = sum(1 for line in fh if line.strip())
+
     meta = dict(
         config_id=tag, arm=task["arm"], faces=list(task["faces"]),
         faces_live=live, boundary_value=task["boundary_value"],
@@ -215,6 +245,14 @@ def run(task):
     # is recorded but is not by itself treated as failure. Presence of data decides.
     if not ok:
         meta["error"] = (out[-2000:] + proc.stderr[-2000:]) or "no output"
+        return meta, None
+
+    meta["n_rules_loaded"] = n_rules
+    if n_rules == 0:
+        meta["error"] = ("cell rules did not load: cell_rules_parsed.csv is empty. "
+                         "The ruleset folder is resolved against the working "
+                         "directory, so a relative path yields no rules and the "
+                         "drug does nothing. This run is not usable.")
         return meta, None
 
     meta.update(field_stats(read_microenv(final)))
