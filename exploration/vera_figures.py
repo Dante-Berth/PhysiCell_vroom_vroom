@@ -264,17 +264,41 @@ def fig_fields(run_dir, out):
     print("wrote", out)
 
 
+def with_delta(df):
+    """Difference every treated run against the untreated run of its OWN seed.
+
+    Untreated growth varies a lot between seeds (rectangle spans 144 to 274 over
+    six), so differencing against a family median lets seed luck masquerade as a
+    treatment effect. Pairing on the seed cancels it.
+    """
+    u = (df[df["arm"] == "untreated"]
+         .set_index(["ic_family", "seed"])["n_tumor_T"].to_dict())
+    t = df[df["arm"] != "untreated"].copy()
+    t["untreated_same_seed"] = [u.get((f, s), float("nan"))
+                                for f, s in zip(t.ic_family, t.seed)]
+    t["delta"] = t.n_tumor_T - t.untreated_same_seed
+    return t
+
+
 def numbers(df, out):
-    """The table the report quotes, so no number in the prose is retyped by hand."""
-    g = (df[df["arm"] != "untreated"]
-         .groupby(["arm", "drug_diffusion", "boundary_value"])
+    """The full grid, one row per configuration, keyed on the same-seed delta.
+
+    Kept per initial-condition family rather than pooled: the two families have
+    different untreated growth, so pooling them averages over the thing the
+    delta is measuring.
+    """
+    t = with_delta(df)
+    g = (t.groupby(["arm", "ic_family", "drug_diffusion", "boundary_value"])
          .agg(centre=("drug_centre_mean", "median"),
               interior=("drug_interior_mean", "median"),
               frac_half=("frac_above_half_max", "median"),
               n_tumor_T=("n_tumor_T", "median"),
+              untreated_same_seed=("untreated_same_seed", "median"),
+              delta=("delta", "median"),
               n=("seed", "count")).reset_index())
     g["diff_len"] = np.sqrt(g["drug_diffusion"] / DECAY)
     g["macrophage_response"] = hill(g["centre"])
+    g = g.sort_values(["arm", "ic_family", "drug_diffusion", "boundary_value"])
     u = df[df["arm"] == "untreated"]
     g.to_csv(out, index=False)
     print("wrote", out)
@@ -282,6 +306,82 @@ def numbers(df, out):
         print(f"untreated: n={len(u)}  drug_max={u['drug_max'].max():.3g}  "
               f"tumour {u['n_tumor_0'].median():.0f} -> {u['n_tumor_T'].median():.0f}")
     return g
+
+
+def fig_grid(df, out):
+    """The whole grid as a picture, so the report need not send anyone to a CSV.
+
+    Rows are the two influx geometries, columns the two initial conditions. Each
+    cell is diffusion coefficient against boundary concentration, coloured by how
+    much the tumour changed against the same seed untreated, and annotated with
+    that number. The hatched cells are the ones where the drug never reached the
+    middle.
+    """
+    t = with_delta(df)
+    arms = [a for a in ("boundary_all", "boundary_one") if (t.arm == a).any()]
+    fams = sorted(t.ic_family.unique())
+    if not arms or not fams:
+        print("no data for the grid figure")
+        return
+    Ds = sorted(t.drug_diffusion.unique())
+    Vs = sorted(t.boundary_value.unique())
+
+    lim = float(np.nanmax(np.abs(t.delta))) or 1.0
+    fig, axes = plt.subplots(len(arms), len(fams),
+                             figsize=(3.5 * len(fams), 3.0 * len(arms)),
+                             squeeze=False)
+    for i, arm in enumerate(arms):
+        for j, fam in enumerate(fams):
+            ax = axes[i][j]
+            sub = t[(t.arm == arm) & (t.ic_family == fam)]
+            M = np.full((len(Vs), len(Ds)), np.nan)
+            C = np.full((len(Vs), len(Ds)), np.nan)
+            for r, v in enumerate(Vs):
+                for c, D in enumerate(Ds):
+                    g = sub[(sub.boundary_value == v) & (sub.drug_diffusion == D)]
+                    if len(g):
+                        M[r, c] = g.delta.median()
+                        C[r, c] = g.drug_centre_mean.median()
+            im = ax.imshow(M, cmap="RdBu_r", vmin=-lim, vmax=lim, origin="lower",
+                           aspect="auto")
+            for r in range(len(Vs)):
+                for c in range(len(Ds)):
+                    if np.isnan(M[r, c]):
+                        continue
+                    # Mark the cells where the centre never cleared the half-max:
+                    # a tumour change there cannot be the drug acting centrally.
+                    if C[r, c] < HALF_MAX:
+                        ax.add_patch(plt.Rectangle(
+                            (c - 0.5, r - 0.5), 1, 1, fill=False, lw=0,
+                            hatch="///", edgecolor="#00000028"))
+                    ax.text(c, r, f"{M[r, c]:+.0f}", ha="center", va="center",
+                            fontsize=8.5,
+                            color="w" if abs(M[r, c]) > 0.55 * lim else "#222")
+            ax.set_xticks(range(len(Ds)))
+            ax.set_xticklabels([f"{D:g}\n({math.sqrt(D/DECAY):.1f})" for D in Ds],
+                               fontsize=7.5)
+            ax.set_yticks(range(len(Vs)))
+            ax.set_yticklabels([f"{v:g}" for v in Vs], fontsize=8)
+            if i == 0:
+                ax.set_title(fam.replace("_", " ") + " initial condition",
+                             fontsize=9.5)
+            if j == 0:
+                ax.set_ylabel(("all four sides" if arm == "boundary_all"
+                               else "one side")
+                              + "\n\nboundary concentration", fontsize=8.5)
+            if i == len(arms) - 1:
+                ax.set_xlabel("diffusion coefficient $D$\n(diffusion length, "
+                              "$\\mu$m)", fontsize=8.5)
+    cb = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.03, pad=0.02)
+    cb.set_label("change in tumour cells against the same seed untreated",
+                 fontsize=8)
+    cb.ax.tick_params(labelsize=7)
+    fig.suptitle("Every configuration that was run. Blue is fewer tumour cells, "
+                 "white is no effect;\nhatched cells are those where the drug "
+                 "never reached the middle of the domain", fontsize=10.5, y=1.05)
+    fig.savefig(out, bbox_inches="tight")
+    fig.savefig(out.replace(".pdf", ".png"), dpi=170, bbox_inches="tight")
+    print("wrote", out)
 
 
 def main():
@@ -303,6 +403,7 @@ def main():
     fig_penetration(df, os.path.join(out, "fig_penetration.pdf"))
     fig_tumour(df, os.path.join(out, "fig_tumour.pdf"), disc)
     fig_fields(a.run_dir, os.path.join(out, "fig_fields.pdf"))
+    fig_grid(df, os.path.join(out, "fig_grid.pdf"))
     numbers(df, os.path.join(out, "numbers.csv"))
 
 

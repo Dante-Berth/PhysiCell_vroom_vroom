@@ -67,6 +67,11 @@ def main():
         t = (b[b.boundary_value == 1.0].groupby("drug_diffusion")
              .agg(centre=("drug_centre_mean", "median"),
                   frac=("frac_above_half_max", "median")).reset_index())
+        out.append("![The drug field itself, on one shared colour scale. Each "
+                   "row is a way of delivering the drug and the columns are "
+                   "time. The $D=0.3$ row is the result in one picture: a bright "
+                   "rim at the wall and a black interior, hours after the influx "
+                   "began and unchanged at 50 h.](fig_fields.png)\n")
         out.append("At the strongest boundary concentration tested (1.0), with "
                    "influx from all four sides:\n")
         out.append("| $D$ | diffusion length | drug at the centre | fraction of the "
@@ -85,6 +90,12 @@ def main():
                    f"boundary concentration does not fix this, because the profile "
                    f"is exponential in $\\sqrt{{D/\\lambda}}$: it scales the rim, "
                    f"not the reach.\n")
+
+    out.append("![Drug concentration at the centre of the domain against the "
+               "diffusion coefficient, for each boundary strength and both "
+               "geometries. The dashed line is the Hill half-max: below it the "
+               "drug does essentially nothing, and that is the shaded "
+               "region.](fig_penetration.png)\n")
 
     one = d[d.arm == "boundary_one"]
     if len(one):
@@ -131,8 +142,21 @@ def main():
         out.append("Each treated run is compared against the untreated run from "
                    "**the same seed**, because untreated growth varies "
                    "considerably between seeds and a family median would hide "
-                   "that. Only the strongest boundary concentration is shown "
-                   "here; the full grid is in `numbers.csv`.\n")
+                   "that.\n")
+        out.append("![Every configuration that was run: influx geometry (rows) "
+                   "against initial condition (columns), diffusion coefficient "
+                   "against boundary concentration within each panel. Blue is "
+                   "fewer tumour cells. The hatched cells are those where the "
+                   "drug never reached the middle of the "
+                   "domain.](fig_grid.png)\n")
+        out.append("The shape of that figure is the result: **the whole "
+                   "left-hand half of every panel is pale.** At $D = 0.3$ and "
+                   "$D = 3$ nothing happens whatever the boundary concentration, "
+                   "because the drug is still sitting at the wall. The effect "
+                   "appears only in the right-hand columns, and there it appears "
+                   "sharply.\n")
+        out.append("Reading the same data as a table, at the strongest boundary "
+                   "concentration:\n")
         out.append("| initial condition | influx | $D$ | drug at centre | "
                    "domain above half-max | final tumour | "
                    "change vs same-seed untreated |")
@@ -162,6 +186,11 @@ def main():
                    "removes at the same $D$. Treating part of the tissue well is "
                    "not far behind treating all of it weakly, which is the same "
                    "point the aimed disc makes below.\n")
+
+    out.append("![Tumour burden over the 50 hours, median and interquartile "
+               "range over seeds. The boundary arms are shown at their most "
+               "favourable setting. The untreated curve is the reference every "
+               "arm is read against.](fig_tumour.png)\n")
 
     if len(disc):
         out.append("The injected-disc arms, for comparison, at dose 0.6:\n")
