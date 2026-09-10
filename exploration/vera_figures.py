@@ -33,14 +33,29 @@ C_DISC = "#2e7d32"
 
 
 def load(run_dir):
-    rows = []
+    rows, skipped = [], 0
     for mp in sorted(glob.glob(os.path.join(run_dir, "episodes", "*", "meta.json"))):
         m = json.load(open(mp))
-        if not m.get("wrote_output"):
+        if not m.get("wrote_output") or m.get("error"):
+            skipped += 1
+            continue
+        # ⚠️ Refuse any episode that ran without cell rules. drug_1 acts on cells
+        # only through them, so a rules-free run is an untreated run under a
+        # treated run's name and its numbers look entirely plausible. A whole
+        # 156-episode grid was lost to this once; never plot one.
+        if m.get("n_rules_loaded", None) == 0:
+            skipped += 1
             continue
         m["_dir"] = os.path.dirname(mp)
         rows.append(m)
-    return pd.DataFrame(rows)
+    if skipped:
+        print(f"  skipped {skipped} unusable episodes in {os.path.basename(run_dir)}")
+    df = pd.DataFrame(rows)
+    if len(df) and "n_rules_loaded" in df.columns:
+        missing = int((df["n_rules_loaded"].fillna(-1) < 0).sum())
+        if missing:
+            print(f"  ⚠️  {missing} episodes predate the rules check; verify them")
+    return df
 
 
 def series(rowdir):
