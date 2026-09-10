@@ -46,7 +46,17 @@ int main(int argc, char* argv[]) {
     // EPISODE LOOP BEGIN //
     ////////////////////////
 
-    for (int i_episode = 0; i_episode < 4; i_episode++) {
+    // Number of episodes this invocation runs. Historically hard-coded to 4, which
+    // is what the physigym-era harness wanted. A standalone scenario sweep runs one
+    // parameter point per process and threw away 3/4 of its compute, so the bound is
+    // now overridable. Default unchanged, so every existing caller behaves as before.
+    int n_episodes = 4;
+    if (const char* s_ep = std::getenv("PHYSICELL_N_EPISODES")) {
+        int v = std::atoi(s_ep);
+        if (v > 0) { n_episodes = v; }
+    }
+
+    for (int i_episode = 0; i_episode < n_episodes; i_episode++) {
 
         ///////////
         // start //

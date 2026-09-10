@@ -188,8 +188,12 @@ def run(task):
 
     # ⚠️ main.cpp writes to ./output/episodeNNNNNNNN relative to CWD, ignoring
     # //save/folder. Run inside `work` so those land here and not in the shared tree.
+    # ⚠️ main.cpp ran a hard-coded FOUR episodes per invocation, so a scenario sweep
+    # that wants one parameter point per process threw away 3/4 of its compute. The
+    # bound now honours PHYSICELL_N_EPISODES (default still 4, so nothing else moves).
+    env = dict(os.environ, PHYSICELL_N_EPISODES="1", OMP_NUM_THREADS="1")
     proc = subprocess.run([BINARY, xml], cwd=work, capture_output=True, text=True,
-                          timeout=task.get("timeout", 1800))
+                          env=env, timeout=task.get("timeout", 1800))
     out = proc.stdout
     live = parse_live_faces(out)
 
