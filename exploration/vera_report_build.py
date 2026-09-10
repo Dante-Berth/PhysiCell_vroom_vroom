@@ -115,25 +115,42 @@ def main():
                f"**{unt.get('rectangle', float('nan')):.0f}** on the rectangle one. "
                f"Every arm below starts from the same cells.\n")
     if len(b):
-        rows = []
+        # ⚠️ Pair each treated run against its OWN seed's untreated run, not
+        # against the family median. Untreated growth varies a lot between seeds
+        # (rectangle spans 144 to 274 over six seeds), so an arm that happens to
+        # hold only the low-growth seeds looks effective when it is not. Only
+        # configurations with the full set of seeds are reported.
+        u_by_seed = (d[d.arm == "untreated"]
+                     .set_index(["ic_family", "seed"])["n_tumor_T"].to_dict())
+        b = b.copy()
+        b["u_seed"] = [u_by_seed.get((f, s), float("nan"))
+                       for f, s in zip(b.ic_family, b.seed)]
+        b["delta"] = b.n_tumor_T - b.u_seed
+
+        n_seeds = int(d[d.arm == "untreated"].groupby("ic_family").size().max())
+        out.append("Each treated run is compared against the untreated run from "
+                   "**the same seed**, because untreated growth varies "
+                   "considerably between seeds and a family median would hide "
+                   "that.\n")
+        out.append("| initial condition | boundary $D$ | boundary value | "
+                   "drug at centre | final tumour | change vs same-seed untreated |")
+        out.append("|---|---|---|---|---|---|")
         for (fam, D, v), g in b.groupby(["ic_family", "drug_diffusion",
                                          "boundary_value"]):
-            rows.append(dict(fam=fam, D=D, v=v, cT=g.n_tumor_T.median(),
-                             n=len(g), centre=g.drug_centre_mean.median()))
-        bb = pd.DataFrame(rows)
-        best = bb[(bb.D == bb.D.max()) & (bb.v == bb.v.max())]
-        out.append("| initial condition | arm | final tumour | vs untreated |")
-        out.append("|---|---|---|---|")
-        for fam in sorted(bb.fam.unique()):
-            u = unt.get(fam, float("nan"))
-            out.append(f"| {fam.replace('_',' ')} | untreated | {u:.0f} | -- |")
-            r = best[best.fam == fam]
-            if len(r):
-                r = r.iloc[0]
-                out.append(f"| {fam.replace('_',' ')} | boundary, all sides, "
-                           f"$D={r.D:g}$, value {r.v:g} | {r.cT:.0f} | "
-                           f"{r.cT - u:+.0f} |")
+            if len(g) < n_seeds:
+                continue          # incomplete: reporting it would mislead
+            out.append(f"| {fam.replace('_',' ')} | {D:g} | {v:g} | "
+                       f"{g.drug_centre_mean.median():.3f} | "
+                       f"{g.n_tumor_T.median():.0f} | "
+                       f"**{g.delta.median():+.0f}** |")
         out.append("")
+        out.append("The pattern follows the field measurements directly: at "
+                   "$D = 0.3$ the drug never reaches the tumour and the tumour "
+                   "grows as though untreated, while at $D = 30$ and above, at a "
+                   "boundary concentration that clears the half-max, it is cut "
+                   "substantially. A boundary influx does work in this model, but "
+                   "only in the regime where the field has stopped being "
+                   "localised.\n")
 
     if len(disc):
         out.append("The injected-disc arms, for comparison, at dose 0.6:\n")
