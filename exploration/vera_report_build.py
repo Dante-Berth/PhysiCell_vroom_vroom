@@ -22,14 +22,26 @@ DECAY = 0.05
 HALF_MAX = 0.5
 
 
-def load(run_dir):
+def load(run_dir, standalone=True):
+    """Episodes from a run directory, dropping any that are not usable.
+
+    `standalone` distinguishes the two harnesses: boundary_run writes
+    wrote_output and n_rules_loaded, dose_run (the gym-driven one) writes
+    neither, so requiring them would silently discard every disc episode.
+    """
     rows = []
     for mp in sorted(glob.glob(os.path.join(run_dir, "episodes", "*", "meta.json"))):
         m = json.load(open(mp))
-        if not m.get("wrote_output") or m.get("error"):
+        if m.get("error"):
             continue
-        if m.get("n_rules_loaded", None) == 0:
-            continue
+        if standalone:
+            if not m.get("wrote_output"):
+                continue
+            # ⚠️ Never let a rules-free episode into the prose: the drug acts on
+            # cells only through cell_rules.csv, so such a run is an untreated run
+            # wearing a treated run's name and its numbers look entirely plausible.
+            if m.get("n_rules_loaded", None) == 0:
+                continue
         rows.append(m)
     return pd.DataFrame(rows)
 
@@ -40,7 +52,7 @@ def fmt(x, n=1):
 
 def main():
     d = load(RUN)
-    disc = load(DISC) if os.path.isdir(DISC) else pd.DataFrame()
+    disc = load(DISC, standalone=False) if os.path.isdir(DISC) else pd.DataFrame()
     unt = d[d.arm == "untreated"].groupby("ic_family")["n_tumor_T"].median()
     out = []
 
