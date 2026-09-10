@@ -122,35 +122,46 @@ def main():
         # configurations with the full set of seeds are reported.
         u_by_seed = (d[d.arm == "untreated"]
                      .set_index(["ic_family", "seed"])["n_tumor_T"].to_dict())
-        b = b.copy()
-        b["u_seed"] = [u_by_seed.get((f, s), float("nan"))
-                       for f, s in zip(b.ic_family, b.seed)]
-        b["delta"] = b.n_tumor_T - b.u_seed
+        bo = d[d.arm.isin(["boundary_all", "boundary_one"])].copy()
+        bo["delta"] = [r.n_tumor_T - u_by_seed.get((r.ic_family, r.seed),
+                                                   float("nan"))
+                       for r in bo.itertuples()]
 
         n_seeds = int(d[d.arm == "untreated"].groupby("ic_family").size().max())
         out.append("Each treated run is compared against the untreated run from "
                    "**the same seed**, because untreated growth varies "
                    "considerably between seeds and a family median would hide "
-                   "that.\n")
-        out.append("| initial condition | boundary $D$ | boundary value | "
-                   "drug at centre | final tumour | change vs same-seed untreated |")
-        out.append("|---|---|---|---|---|---|")
-        for (fam, D, v), g in b.groupby(["ic_family", "drug_diffusion",
-                                         "boundary_value"]):
+                   "that. Only the strongest boundary concentration is shown "
+                   "here; the full grid is in `numbers.csv`.\n")
+        out.append("| initial condition | influx | $D$ | drug at centre | "
+                   "domain above half-max | final tumour | "
+                   "change vs same-seed untreated |")
+        out.append("|---|---|---|---|---|---|---|")
+        best_v = bo.boundary_value.max()
+        for (fam, arm, D), g in bo[bo.boundary_value == best_v].groupby(
+                ["ic_family", "arm", "drug_diffusion"]):
             if len(g) < n_seeds:
                 continue          # incomplete: reporting it would mislead
-            out.append(f"| {fam.replace('_',' ')} | {D:g} | {v:g} | "
+            side = "all four sides" if arm == "boundary_all" else "one side"
+            out.append(f"| {fam.replace('_',' ')} | {side} | {D:g} | "
                        f"{g.drug_centre_mean.median():.3f} | "
+                       f"{g.frac_above_half_max.median()*100:.0f}% | "
                        f"{g.n_tumor_T.median():.0f} | "
                        f"**{g.delta.median():+.0f}** |")
         out.append("")
-        out.append("The pattern follows the field measurements directly: at "
+        out.append("The pattern follows the field measurements directly. At "
                    "$D = 0.3$ the drug never reaches the tumour and the tumour "
-                   "grows as though untreated, while at $D = 30$ and above, at a "
-                   "boundary concentration that clears the half-max, it is cut "
-                   "substantially. A boundary influx does work in this model, but "
-                   "only in the regime where the field has stopped being "
-                   "localised.\n")
+                   "grows as though untreated, on both initial conditions and "
+                   "from either geometry. At $D = 30$ and above it is cut "
+                   "substantially. **A boundary influx does work in this model, "
+                   "but only in the regime where the field has stopped being "
+                   "localised.**\n")
+        out.append("The one-sided arm is worth a second look. At $D = 30$ it "
+                   "reaches only about a third of the domain above the half-max, "
+                   "yet it removes roughly two thirds of what the four-sided arm "
+                   "removes at the same $D$. Treating part of the tissue well is "
+                   "not far behind treating all of it weakly, which is the same "
+                   "point the aimed disc makes below.\n")
 
     if len(disc):
         out.append("The injected-disc arms, for comparison, at dose 0.6:\n")
