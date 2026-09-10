@@ -57,11 +57,7 @@ def main():
     out = []
 
     # ── results section ────────────────────────────────────────────────────
-    out.append("### The drug field: how far in does a boundary influx reach\n")
-    out.append("The drug is clamped at the chosen concentration on the boundary "
-               "faces and then diffuses inward against its own decay. How far it "
-               "gets is set by the diffusion length "
-               "$\\sqrt{D/\\lambda}$, and on a 63 um domain that is decisive.\n")
+    out.append("### How far in does a boundary influx reach\n")
     b = d[d.arm == "boundary_all"]
     if len(b):
         t = (b[b.boundary_value == 1.0].groupby("drug_diffusion")
@@ -71,8 +67,8 @@ def main():
                    "row is a way of delivering the drug and the columns are "
                    "time. The $D=0.3$ row is the result in one picture: a bright "
                    "rim at the wall and a black interior, hours after the influx "
-                   "began and unchanged at 50 h.](fig_fields.png)\n")
-        out.append("At the strongest boundary concentration tested (1.0), with "
+                   "began and unchanged at 50 h.](fig_fields.png){width=78%}\n")
+        out.append("At the strongest boundary concentration tested (1.0), "
                    "influx from all four sides:\n")
         out.append("| $D$ | diffusion length | drug at the centre | fraction of the "
                    "domain above the half-max |")
@@ -95,36 +91,37 @@ def main():
                "diffusion coefficient, for each boundary strength and both "
                "geometries. The dashed line is the Hill half-max: below it the "
                "drug does essentially nothing, and that is the shaded "
-               "region.](fig_penetration.png)\n")
+               "region.](fig_penetration.png){width=78%}\n")
 
     one = d[d.arm == "boundary_one"]
     if len(one):
         o = (one[(one.boundary_value == 1.0)].groupby("drug_diffusion")
              .agg(centre=("drug_centre_mean", "median"),
                   frac=("frac_above_half_max", "median")).reset_index())
-        out.append("### Influx from one side, which is the more realistic picture\n")
-        out.append("With the drug entering through a single face, as blood would "
-                   "arrive from one vessel, the field is a gradient across the "
-                   "tissue rather than a bath.\n")
+        out.append("### Influx from one side\n")
+        out.append("Entering through a single face, as blood would from one "
+                   "vessel, gives a gradient across the tissue rather than a "
+                   "bath.\n")
         out.append("| $D$ | drug at the centre | fraction above the half-max |")
         out.append("|---|---|---|")
         for _, r in o.iterrows():
             out.append(f"| {r.drug_diffusion:g} | {r.centre:.3f} | "
                        f"{r.frac*100:.0f}% |")
         out.append("")
-        out.append("That asymmetry is exactly what flowing in from all sides was "
-                   "meant to avoid, and it is worth being explicit about the "
-                   "trade: the one-sided case is more faithful to a vessel, and it "
-                   "is also the case in which one part of the tumour is treated and "
-                   "another is not.\n")
+        out.append("That asymmetry is what flowing in from all sides was meant "
+                   "to avoid. The trade is explicit: the one-sided case is more "
+                   "faithful to a vessel, and it is also the one where part of "
+                   "the tumour is treated and part is not.\n")
 
     # ── tumour outcome ─────────────────────────────────────────────────────
     out.append("### What it does to the tumour\n")
-    out.append(f"Over 50 hours, untreated, the tumour grows to "
-               f"**{unt.get('network_field', float('nan')):.0f}** cells on the "
-               f"network-field initial condition and "
-               f"**{unt.get('rectangle', float('nan')):.0f}** on the rectangle one. "
-               f"Every arm below starts from the same cells.\n")
+    out.append(f"Untreated over 50 h the tumour reaches "
+               f"**{unt.get('network_field', float('nan')):.0f}** cells "
+               f"(network field) and "
+               f"**{unt.get('rectangle', float('nan')):.0f}** (rectangle). Every "
+               f"arm starts from the same cells, and each treated run is "
+               f"differenced against the untreated run of **its own seed**, "
+               f"because untreated growth varies a lot between seeds.\n")
     if len(b):
         # ⚠️ Pair each treated run against its OWN seed's untreated run, not
         # against the family median. Untreated growth varies a lot between seeds
@@ -139,32 +136,30 @@ def main():
                        for r in bo.itertuples()]
 
         n_seeds = int(d[d.arm == "untreated"].groupby("ic_family").size().max())
-        out.append("Each treated run is compared against the untreated run from "
-                   "**the same seed**, because untreated growth varies "
-                   "considerably between seeds and a family median would hide "
-                   "that.\n")
+
         out.append("![Every configuration that was run: influx geometry (rows) "
                    "against initial condition (columns), diffusion coefficient "
                    "against boundary concentration within each panel. Blue is "
                    "fewer tumour cells. The hatched cells are those where the "
                    "drug never reached the middle of the "
-                   "domain.](fig_grid.png)\n")
-        out.append("The shape of that figure is the result: **the whole "
-                   "left-hand half of every panel is pale.** At $D = 0.3$ and "
-                   "$D = 3$ nothing happens whatever the boundary concentration, "
-                   "because the drug is still sitting at the wall. The effect "
-                   "appears only in the right-hand columns, and there it appears "
-                   "sharply.\n")
-        out.append("Reading the same data as a table, at the strongest boundary "
-                   "concentration:\n")
+                   "domain.](fig_grid.png){width=78%}\n")
+        out.append("**The whole left-hand half of every panel is pale.** At "
+                   "$D = 0.3$ and $D = 3$ nothing happens whatever the boundary "
+                   "concentration, because the drug is still at the wall. The "
+                   "effect appears only in the right-hand columns, and sharply. "
+                   "The two ends of the $D$ range, at the strongest concentration:\n")
         out.append("| initial condition | influx | $D$ | drug at centre | "
                    "domain above half-max | final tumour | "
                    "change vs same-seed untreated |")
         out.append("|---|---|---|---|---|---|---|")
         best_v = bo.boundary_value.max()
+        # The two extremes of the D range carry the argument; the middle is in
+        # the figure above and in numbers.csv, and repeating all four here made
+        # a sixteen-row table nobody reads.
+        keep = {bo.drug_diffusion.min(), bo.drug_diffusion.max()}
         for (fam, arm, D), g in bo[bo.boundary_value == best_v].groupby(
                 ["ic_family", "arm", "drug_diffusion"]):
-            if len(g) < n_seeds:
+            if len(g) < n_seeds or D not in keep:
                 continue          # incomplete: reporting it would mislead
             side = "all four sides" if arm == "boundary_all" else "one side"
             out.append(f"| {fam.replace('_',' ')} | {side} | {D:g} | "
@@ -173,24 +168,21 @@ def main():
                        f"{g.n_tumor_T.median():.0f} | "
                        f"**{g.delta.median():+.0f}** |")
         out.append("")
-        out.append("The pattern follows the field measurements directly. At "
-                   "$D = 0.3$ the drug never reaches the tumour and the tumour "
-                   "grows as though untreated, on both initial conditions and "
-                   "from either geometry. At $D = 30$ and above it is cut "
-                   "substantially. **A boundary influx does work in this model, "
-                   "but only in the regime where the field has stopped being "
-                   "localised.**\n")
-        out.append("The one-sided arm is worth a second look. At $D = 30$ it "
-                   "reaches only about a third of the domain above the half-max, "
-                   "yet it removes roughly two thirds of what the four-sided arm "
-                   "removes at the same $D$. Treating part of the tissue well is "
-                   "not far behind treating all of it weakly, which is the same "
-                   "point the aimed disc makes below.\n")
+        out.append("The outcome follows the field measurement directly: nothing "
+                   "at $D = 0.3$ on either geometry, a substantial cut at "
+                   "$D = 30$ and above. **A boundary influx works only where the "
+                   "field has stopped being localised.**\n")
+        out.append("The one-sided arm is worth a second look: at $D = 30$ it "
+                   "lifts only about a third of the domain above the half-max, "
+                   "yet removes roughly two thirds of what four-sided removes at "
+                   "the same $D$. Treating part of the tissue well is not far "
+                   "behind treating all of it weakly, which is the point the "
+                   "aimed disc makes below.\n")
 
     out.append("![Tumour burden over the 50 hours, median and interquartile "
                "range over seeds. The boundary arms are shown at their most "
                "favourable setting. The untreated curve is the reference every "
-               "arm is read against.](fig_tumour.png)\n")
+               "arm is read against.](fig_tumour.png){width=78%}\n")
 
     if len(disc):
         out.append("The injected-disc arms, for comparison, at dose 0.6:\n")
@@ -205,43 +197,37 @@ def main():
             out.append(f"| {fam.replace('_',' ')} | {name} | {cT:.0f} | "
                        f"{dose:.1f} | **{(u-cT)/dose:.1f}** |")
         out.append("")
-        out.append("The uniform disc reaches the lowest tumour count of anything "
-                   "tested, and it does so by covering every voxel: it spends about "
-                   "**16 times** the drug the aimed disc spends. Per unit of drug "
-                   "the aimed disc is roughly **eight times** more efficient. That "
-                   "is the reason a comparison of arms on tumour count alone is "
-                   "misleading, and why the field figures above are reported "
-                   "separately from the outcome ones.\n")
+        out.append("The uniform disc reaches the lowest count of anything "
+                   "tested, by covering every voxel and spending about **16 "
+                   "times** the drug. Per unit of drug the aimed disc is roughly "
+                   "**eight times** more efficient. Comparing arms on tumour "
+                   "count alone is therefore misleading, which is why the field "
+                   "and outcome figures are reported separately.\n")
 
     conclusion = (
-        "The proposal was to give `drug_1` a small diffusion coefficient, around "
-        "0.3, as a compromise between realism and keeping the action targeted. The "
-        "measurements say that value is not a compromise: its diffusion length is "
-        "2.4 um against an injection radius of 8.9 um and a domain of 63 um, so the "
-        "drug barely moves. As a boundary influx it never reaches the middle of the "
-        "tissue at all.\n\n"
-        "The opposite end is no better for a different reason. To get a boundary "
-        "influx to the centre of this domain takes $D$ of order 30 to 300, at which "
-        "point the diffusion length is comparable to the domain itself and the "
-        "field is nearly flat. A drug delivered that way arrives everywhere at once, "
-        "so where it was administered stops mattering.\n\n"
-        "That is the dilemma, and it is a property of the geometry rather than of "
-        "the model's parameters: **on a domain six cell-widths across, a drug can "
-        "be localised or it can be evenly distributed, and there is very little "
-        "room in between.** The existing substrates show the same thing from the "
-        "other direction: `cytokine` reaches 0.55 um and `anti_tumoral_factor` "
-        "reaches 54.8 um, and nothing in the model sits usefully between them.\n\n"
-        "For the thesis this matters because the question it asks is whether "
-        "*where* the drug is placed can be learned from *what the agent can see*. "
-        "That question needs an action whose placement changes the outcome. Setting "
-        "$D = 0$ is the choice that keeps it, and the honest way to state it is "
-        "that it makes the control problem harder rather than easier: the drug acts "
-        "exactly where it is put, so a badly aimed injection is genuinely wasted, "
-        "with nothing spreading it onto the target.\n\n"
-        "A boundary influx is worth having as a **comparison arm** rather than as a "
-        "replacement, and that is how it is reported here: it is a different "
-        "actuator, with no position or radius to choose, and it is therefore "
-        "outside the question the thesis is asking rather than a variant of it."
+        "**$D = 0.3$ is not a compromise.** Its diffusion length is 2.4 um against "
+        "an injection radius of 8.9 um and a domain of 63 um, so the drug barely "
+        "moves, and as a boundary influx it never reaches the middle of the tissue "
+        "at all.\n\n"
+        "**The other end fails differently.** Getting a boundary influx to the "
+        "centre takes $D$ of order 30 to 300, where the diffusion length is "
+        "comparable to the domain and the field is nearly flat. The drug then "
+        "arrives everywhere at once, so where it was administered stops "
+        "mattering.\n\n"
+        "That is the dilemma, and it is geometry rather than parameters: **on a "
+        "domain six cell-widths across, a drug can be localised or evenly "
+        "distributed, with very little room in between.** The existing substrates "
+        "bracket it from both sides, `cytokine` at 0.55 um and "
+        "`anti_tumoral_factor` at 54.8 um, with nothing usefully between.\n\n"
+        "For the thesis this matters because the question is whether *where* the "
+        "drug goes can be learned from *what the agent sees*, which needs an "
+        "action whose placement changes the outcome. $D = 0$ keeps that, and it "
+        "makes the control problem harder rather than easier: a badly aimed "
+        "injection is genuinely wasted, with nothing spreading it onto the "
+        "target.\n\n"
+        "A boundary influx is worth having as a **comparison arm**, not a "
+        "replacement. It has no position or radius to choose, so it sits outside "
+        "the question the thesis asks rather than being a variant of it."
     )
 
     tpl = open(os.path.join(HERE, "vera_report_template.md")).read()
