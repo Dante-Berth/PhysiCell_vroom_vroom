@@ -66,35 +66,49 @@ def fig_penetration(df, out):
             (axes[1], "boundary_one", C_ONE, "influx from one side (xmin)")):
         sub = df[df["arm"] == arm]
         if sub.empty:
+            # Data for this arm has not landed yet. Say so on the panel rather
+            # than leaving an empty axes that reads as a measured zero.
+            ax.text(0.5, 0.5, "no data yet", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9, color="#999")
+            ax.set_title(title, fontsize=9.5, pad=34)
+            ax.set_xlabel("drug diffusion coefficient $D$  ($\\mu$m$^2$/min)")
             continue
-        for v, mk in zip(sorted(sub["boundary_value"].unique()), ("o", "s", "^")):
-            s = (sub[sub["boundary_value"] == v]
+        vals = sorted(sub["boundary_value"].unique())
+        for i, (v, mk) in enumerate(zip(vals, ("o", "s", "^", "D"))):
+            g = (sub[sub["boundary_value"] == v]
                  .groupby("drug_diffusion")["drug_centre_mean"]
                  .median().reset_index())
-            ax.plot(s["drug_diffusion"], s["drug_centre_mean"], marker=mk,
-                    color=colour, alpha=0.45 + 0.28 * list(
-                        sorted(sub["boundary_value"].unique())).index(v),
+            # Darker line = stronger boundary concentration.
+            alpha = 0.40 + 0.55 * (i / max(len(vals) - 1, 1))
+            ax.plot(g["drug_diffusion"], g["drug_centre_mean"], marker=mk,
+                    color=colour, alpha=min(alpha, 1.0), lw=1.6, ms=5,
                     label=f"boundary = {v:g}")
+        ax.axhspan(0, HALF_MAX, color="k", alpha=0.055, lw=0)
         ax.axhline(HALF_MAX, color="k", ls="--", lw=0.9)
-        ax.text(0.98, HALF_MAX, " Hill half-max: the drug does nothing below this",
-                transform=ax.get_yaxis_transform(), ha="right", va="bottom",
-                fontsize=7.2)
         ax.set_xscale("log")
+        ax.set_ylim(-0.03, 1.03)
         ax.set_xlabel("drug diffusion coefficient $D$  ($\\mu$m$^2$/min)")
-        ax.set_title(title, fontsize=9.5)
+        ax.set_title(title, fontsize=9.5, pad=34)
         ax.grid(alpha=0.25, lw=0.5)
-        ax.legend(fontsize=7.5, frameon=False)
+        ax.legend(fontsize=7.5, frameon=False, loc="upper left")
+        # Label the diffusion length at each measured D, rather than a second
+        # continuous axis: only four values were run, and a log-scaled twin axis
+        # collides with the tick labels underneath it.
+        for D in sorted(df["drug_diffusion"].unique()):
+            ax.annotate(f"{math.sqrt(D / DECAY):.1f}", xy=(D, 1.02),
+                        xycoords=("data", "axes fraction"), ha="center",
+                        va="bottom", fontsize=7, color="#444")
+        ax.annotate("diffusion length $\\sqrt{D/\\lambda}$ ($\\mu$m)",
+                    xy=(0.5, 1.13), xycoords="axes fraction", ha="center",
+                    va="bottom", fontsize=7.5, color="#444")
     axes[0].set_ylabel("drug at the domain centre")
-
-    # A second x axis in the units that actually govern the physics.
-    for ax in axes:
-        sec = ax.secondary_xaxis(
-            "top", functions=(lambda D: np.sqrt(np.maximum(D, 1e-12) / DECAY),
-                              lambda L: DECAY * L ** 2))
-        sec.set_xlabel("diffusion length $\\sqrt{D/\\lambda}$  ($\\mu$m)"
-                       f"      [domain is {DOMAIN:g} $\\mu$m]", fontsize=8)
-    fig.suptitle("A boundary influx cannot be both localised and effective on this "
-                 "domain", fontsize=10.5, y=1.06)
+    axes[0].text(0.03, HALF_MAX - 0.02,
+                 "below this line the drug does essentially nothing",
+                 transform=axes[0].get_yaxis_transform(), ha="left", va="top",
+                 fontsize=7.2, color="#333")
+    fig.suptitle(f"A boundary influx reaches the centre only once it is no longer "
+                 f"localised\n(domain is {DOMAIN:g} $\\mu$m across)",
+                 fontsize=10.5, y=1.10)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     fig.savefig(out.replace(".pdf", ".png"), dpi=170, bbox_inches="tight")
@@ -176,9 +190,9 @@ def fig_fields(run_dir, out):
     import scipy.io as sio
     picks = []
     for arm, D, v in (("untreated", 0.3, 0.0),
+                      ("boundary_all", 0.3, 1.0),
                       ("boundary_all", 30.0, 1.0),
-                      ("boundary_one", 30.0, 1.0),
-                      ("boundary_all", 0.3, 1.0)):
+                      ("boundary_one", 30.0, 1.0)):
         cid = (f"untreated__network_field__s0" if arm == "untreated"
                else f"{arm}__D{D:g}__v{v:g}__network_field__s0")
         d = os.path.join(run_dir, "work", cid, "output", "episode00000000")
@@ -207,8 +221,9 @@ def fig_fields(run_dir, out):
             # One SHARED scale across the whole figure: unlike fig:tme:diffusion,
             # here the absolute level is the point (does it clear the half-max?),
             # so a per-panel scale would hide exactly what matters.
-            ax.imshow(g.values, origin="lower", cmap="magma", vmin=0.0, vmax=1.0,
-                      extent=[0, DOMAIN, 0, DOMAIN], interpolation="nearest")
+            im = ax.imshow(g.values, origin="lower", cmap="magma", vmin=0.0,
+                           vmax=1.0, extent=[0, DOMAIN, 0, DOMAIN],
+                           interpolation="nearest")
             if i == 0:
                 ax.set_title(f"t = {k * 15 / 60:.0f} h", fontsize=8.5)
             if j == 0:
@@ -216,9 +231,19 @@ def fig_fields(run_dir, out):
                        else ("all sides" if arm == "boundary_all" else "one side")
                        + f"\n$D={D:g}$")
                 ax.set_ylabel(lab, fontsize=8)
-    fig.suptitle("The drug_1 field. Shared colour scale, 0 to 1; the Hill half-max "
-                 "is 0.5", fontsize=10, y=1.005)
-    fig.tight_layout()
+    fig.suptitle("The drug field, on one shared colour scale", fontsize=10.5,
+                 y=1.005)
+    # A colourbar with the Hill half-max marked on it, so "is this dark region
+    # doing anything?" can be read off the figure instead of inferred.
+    cb = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.022, pad=0.015)
+    cb.set_label("drug concentration", fontsize=8, labelpad=26)
+    cb.ax.axhline(HALF_MAX, color="w", lw=1.4)
+    cb.ax.axhline(HALF_MAX, color="k", lw=0.7, ls="--")
+    cb.ax.text(1.45, HALF_MAX, "Hill half-max", fontsize=6.8, va="bottom",
+               ha="left", transform=cb.ax.get_yaxis_transform())
+    cb.ax.text(1.45, HALF_MAX, "no effect below", fontsize=6.8, va="top",
+               ha="left", color="#666", transform=cb.ax.get_yaxis_transform())
+    cb.ax.tick_params(labelsize=7)
     fig.savefig(out, bbox_inches="tight")
     fig.savefig(out.replace(".pdf", ".png"), dpi=170, bbox_inches="tight")
     print("wrote", out)
