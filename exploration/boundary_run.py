@@ -238,6 +238,11 @@ def run(task):
         diffusion_length=float(np.sqrt(task["drug_diffusion"] / DRUG_DECAY))
         if task["drug_diffusion"] > 0 else 0.0,
         ic_family=task["ic_family"], seed=task["seed"],
+        # The IC geometry cell. Added when the sweep was crossed with
+        # correlation_length x threshold: without it every run reports
+        # ic_cell=None and the geometry the sweep exists to vary is
+        # unrecoverable from the episode record.
+        ic_cell=task.get("ic_cell"),
         max_time=task["max_time"], realised=task.get("realised"),
         returncode=proc.returncode, wrote_output=ok,
     )
@@ -291,6 +296,25 @@ def main():
         df.to_csv(os.path.join(ep, "field.csv.gz"), index=False,
                   compression="gzip")
     json.dump(meta, open(os.path.join(ep, "meta.json"), "w"), indent=2)
+
+    # Drop the raw MultiCellDS frames once the time course is safely distilled.
+    #
+    # Each run writes 201 timepoints x (substrate .mat + cells .mat + xml + 3 graph
+    # files) = 1231 files, 106 MB. Everything any analysis reads is already in the
+    # 4 KB field.csv.gz above and in meta.json, so at 2000 runs this is the difference
+    # between 8 MB and 245 GB of disk.
+    #
+    # Guarded deliberately: only delete when the run SUCCEEDED and the time course was
+    # actually written. A failed run keeps its frames so the failure stays diagnosable,
+    # which is the case where they are worth having.
+    if task.get("keep_frames"):
+        return
+    if not (meta.get("wrote_output") and not meta.get("error") and df is not None
+            and len(df)):
+        return
+    work = os.path.join(task["run_dir"], "work", task["config_id"])
+    if os.path.isdir(work):
+        shutil.rmtree(work, ignore_errors=True)
     print(json.dumps({k: meta[k] for k in
                       ("config_id", "wrote_output", "faces_live", "drug_centre_mean")
                       if k in meta}))
