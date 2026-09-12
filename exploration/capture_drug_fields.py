@@ -6,6 +6,7 @@ short episode per D, injecting a targeted disc at a fixed point, and saves the
 voxel field so the figure can show the field rather than a proxy for it.
 """
 import json
+import math
 import os
 import sys
 
@@ -26,6 +27,28 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "drug_f
 # refuses a second env), so one D per process; the driver below re-invokes this
 # file once per value.
 DS = [0.0, 0.3, 3.0, 30.0, 300.0]
+# A POINT source of amplitude 1, injected once and read immediately, rather than
+# a sustained disc. Three things this fixes, all of which the disc version made
+# the reader work out:
+#   * the peak is exactly 1.0 at D=0 by construction, so every panel reads as a
+#     plain fraction of the injected amplitude with nothing to normalise by;
+#   * no disc means no lattice discretisation, so the 241-to-256 voxel ambiguity
+#     that made the floor a band rather than a value simply does not arise;
+#   * a single pulse shows PURE spreading, where a sustained source shows
+#     spreading and re-injection competing.
+# Sustained injection of 1.0 would plateau at f/(1-f) = 0.895, not 1, since the
+# survival factor over a 15-minute step is exp(-0.05*15) = 0.4724.
+# Reverted to the disc 2026-09-10. A unit point source normalises exactly (peak
+# 1.000 at D=0, no lattice ambiguity) but has no length scale of its own, so it
+# goes from one voxel to the whole domain between D=0 and D=0.3: the peaks are
+# then 1, 0.018, 0.002 and every panel after the first renders black on any
+# shared scale. The disc has a radius to compete with the diffusion length,
+# which is what puts the transition inside the range the figure shows.
+POINT_SOURCE = False
+# The field is read after the step completes and a step applies one round of
+# decay, so injecting 1.0 is observed as 0.4724. Inject the reciprocal so the
+# observed peak is exactly 1.0 and every other panel is a plain fraction of it.
+POINT_AMPLITUDE = 1.0 / math.exp(-0.05 * 15.0)
 WARMUP, TREAT, DOSE = 20, 20, 0.6
 RADIUS_NORM = 0.20
 
@@ -57,12 +80,18 @@ def main():
         u.time_simulation = -1
 
         max_r = float(np.sqrt((u.width / 2) ** 2 + (u.height / 2) ** 2))
-        radius = RADIUS_NORM * max_r
+        # radius below one voxel half-width => exactly one voxel centre inside
+        radius = 0.5 if POINT_SOURCE else RADIUS_NORM * max_r
         # a fixed injection point, so every panel differs ONLY in D
         cx, cy = u.x_min + u.width * 0.5, u.y_min + u.height * 0.5
 
         for step in range(WARMUP + TREAT):
-            dose = 0.0 if step < WARMUP else DOSE
+            if POINT_SOURCE:
+                # inject on the final step only, then read: peak is the injected
+                # amplitude exactly, undecayed
+                dose = POINT_AMPLITUDE if step == WARMUP + TREAT - 1 else 0.0
+            else:
+                dose = 0.0 if step < WARMUP else DOSE
             physicell.set_parameter("drug_1_x", cx)
             physicell.set_parameter("drug_1_y", cy)
             physicell.set_parameter("drug_1_radius", radius)
@@ -74,7 +103,8 @@ def main():
                             x_min=u.x_min, x_max=u.x_max,
                             y_min=u.y_min, y_max=u.y_max)
         saved[str(D)] = dict(peak=float(field[:, -1].max()),
-                             total=float(field[:, -1].sum()))
+                             total=float(field[:, -1].sum()),
+                             point_source=POINT_SOURCE)
         print(f"D={D:8.1f}  peak={saved[str(D)]['peak']:.4f}", flush=True)
         env.close()
 
